@@ -25,3 +25,36 @@ run on the emulated minicomputer.
 This specifically translates to/from the RT11 magnetic tape format. For
 more information, see the 'README' file for that directory.
 
+## boot.bat
+
+This is a simple simh startup script that shows how to boot up a PDP11
+system using an RT11 5.3 image.  These images are available online for
+personal use at various places, including these:
+
+  http://simh.trailing-edge.com/kits/rtv53swre.tar.Z
+  ftp://minnie.tuhs.org/pub/PDP-11/Sims/Supnik_2.3/software/rtv53swre.tar.gz
+  (make sure you read the license file - I'm supposed to mention that)
+
+## attach_ptp.bat, attach_ptr.bat
+
+These are sample simh script files that you can run from the simh console
+to attach a file as the 'paper tape reader' (ptr) or the 'paper tape
+punch'. These scripts make it convenient to transfer text or single files
+to and from the PDP11 environment, by using a disk file on the host as
+input or output to/from the paper tape reader+punch device.
+
+## printer.bat
+
+This is a sample simh script that attaches a printer to a host disk file.
+It will basically let you access the line printer from the PDP11
+environment by writing output to the disk file.  Keep in mind that the
+simh program doesn't immediately flush the buffer, so to get the output
+you will need to detach the file from the simh console.
+
+
+additional information (such as PDP11 documentation) can be found at:
+
+  http://simh.trailing-edge.com/pdf/all_docs.html
+  http://bitsavers.trailing-edge.com/pdf/dec/pdp11/rt11/v5.6_Aug91/
+
+
