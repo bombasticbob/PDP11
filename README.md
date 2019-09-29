@@ -31,11 +31,8 @@ This is a simple simh startup script that shows how to boot up a PDP11
 system using an RT11 5.3 image.  These images are available online for
 personal use at various places, including these:
 
-  <a href="http://simh.trailing-edge.com/kits/rtv53swre.tar.Z">
-    http://simh.trailing-edge.com/kits/rtv53swre.tar.Z</a><br>
-
-  <a href="ftp://minnie.tuhs.org/pub/PDP-11/Sims/Supnik_2.3/software/rtv53swre.tar.gz">
-    ftp://minnie.tuhs.org/pub/PDP-11/Sims/Supnik_2.3/software/rtv53swre.tar.gz </a><br>
+  <a href="http://simh.trailing-edge.com/kits/rtv53swre.tar.Z">rtv53swre.tar.Z</a><br>
+  <a href="ftp://minnie.tuhs.org/pub/PDP-11/Sims/Supnik_2.3/software/rtv53swre.tar.gz">rtv53swre.tar.gz</a></br>
 
   (make sure you read the license file - I'm supposed to mention that)
 
