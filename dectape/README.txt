@@ -1,15 +1,15 @@
-****************************************************************
-**                                                            **
-** DECTAPE - Copyright (c) 2019 by S.F.T. Inc.                **
-**   github:  github.com/bombasticbob/PDP11                   **
-**                                                            **
-** DISCLAIMER:                                                **
-** No warranty whatsoever, either implied or specific.        **
-** You may use the 'dectape' application at your own risk, in **
-** accordance with the copyright and license.                 **
-**                                                            **
-** For licensing and copying terms, see LICENSE and COPYING   **
-****************************************************************
+*******************************************************************
+**                                                               **
+** dectape - Copyright (c) 2019 by Bombastic Bob and S.F.T. Inc. **
+**   github:  github.com/bombasticbob/PDP11/dectape              **
+**                                                               **
+** DISCLAIMER:                                                   **
+** No warranty whatsoever, either implied or specific.           **
+** You may use the 'dectape' application at your own risk, in    **
+** accordance with the copyright and license.                    **
+**                                                               **
+** For licensing and copying terms, see LICENSE and COPYING      **
+*******************************************************************
 
 NOTE:  The term 'DECtape' (with upper case 'DEC') is a product that
 was made by Digital Equipment Corporation.  The application name is
