@@ -24,6 +24,14 @@
 #include <stdint.h>
 #include <string.h>
 #include <unistd.h>
+#include <stdarg.h> /* stdarg to make sure I have va_list and other important stuff */
+#include <dirent.h>
+#include <fnmatch.h>
+#include <sys/stat.h>
+#include <errno.h>
+#include <sys/types.h>
+#include <sys/param.h>
+
 
 
 typedef union _RT11_VOL_HEADER_
@@ -47,6 +55,8 @@ typedef union _RT11_VOL_HEADER_
   } __attribute__((__packed__));
 
 } RT11_VOL_HEADER;
+
+#define SIZEOF_STRUCT_MEMBER(X,Y) sizeof(((X *)(0))->Y)
 
 typedef union _RT11_FILE_HEADER_
 {
@@ -146,6 +156,17 @@ int iVerbosity = 0; // debug output
 
 int read_the_tape(FILE *pTape, const char *szTapeFileName, const char *pOutPath, int bDirectory, int bOverwrite, int bConfirm, int bValidate);
 int read_tape_block(FILE *pTape, void *pHeader); // always 512 byte blocks plus leading/trailing 'TAPE_MARKER'
+int do_initialize_tape(const char *szFileName, int iDriveSize, int bOverwrite, const char *pLabel);
+
+int QueryYesNo(const char *szMessage); // returns non-zero for yes, zero for no
+
+// file utilities (some are derived code from 'ForkMe')
+int FileExists(const char *szFileName);
+int IsDirectory(const char *szFileName);
+void *WBAllocDirectoryList(const char *szDirSpec);
+void WBDestroyDirectoryList(void *pDirectoryList);
+int WBNextDirectoryEntry(void *pDirectoryList, char *szNameReturn, int cbNameReturn, unsigned long *pdwModeAttrReturn);
+
 const char *date_string(const char *pDate);
 
 void usage()
@@ -164,6 +185,11 @@ void usage()
         " -o        DO overwrite existing files\n"
         " -q        Do not prompt to overwrite files or create a directory\n"
         " -V        validates a tape (rather than printing the directory)\n"
+        " -A        append to the tape, rather than overwriting\n"
+        "           (this can put duplicate file names on the tape)\n"
+        " -I        Initialize a new tape file\n"
+        " -S        Specify the size for a new tape file (in MB)\n"
+        " -L        Specify the label for a new tape file\n"
         "\n"
         "To list the file directory of a tape, use\n"
         "    dectape tapefile\n"
@@ -178,20 +204,28 @@ void usage()
         stderr);
 }
 
+static char szTapeLabel[SIZEOF_STRUCT_MEMBER(RT11_VOL_HEADER,owner_name)] =
+  { 'd','e','c','t','a','p','e',' ',' ',' ' };
+
 int main(int argc, char *argv[])
 {
 FILE *pTape = NULL;
+char *p1, *pEnd;
+const char *p1C;
 int i1, iRval;
 int bDirectory = 1;
 int bOverwrite = 0;
+int bAppend = 0;
 int bConfirm = 1;
 int bValidate = 0;
+int bInitialize = 0;
+int iDriveSize = 32;
 
 
   // demo - do a directory of the tape
 
   // get options using 'getopt' so it behaves like every OTHER 'POSIX' utility
-  while((i1 = getopt(argc, argv, "hvVqon"))
+  while((i1 = getopt(argc, argv, "hvVqonAIS:L:"))
         != -1)
   {
     switch(i1)
@@ -219,6 +253,34 @@ int bValidate = 0;
       case 'o':
         bOverwrite = 1;
         break;
+
+      case 'A':
+        bAppend = 1;
+        break;
+
+      case 'I':
+        bInitialize = 1;
+        break;
+
+      case 'S':
+        iDriveSize = atoi(optarg);
+        break;
+
+      case 'L':
+        pEnd = &(szTapeLabel[sizeof(szTapeLabel)]);
+
+        for(p1C=optarg, p1=szTapeLabel; *p1C && p1 < pEnd; )
+        {
+          *(p1++) = *(p1C++);
+        }
+
+        // pad with spaces
+        while(p1 < pEnd)
+        {
+          *(p1++) = ' ';
+        }
+
+        break;
     }
   }
 
@@ -237,6 +299,13 @@ int bValidate = 0;
 
   if(argc >= 2)
   {
+    if(bInitialize)
+    {
+      fprintf(stderr, "Initialize does not take 2 parameters\n");
+      usage();
+      exit(1);
+    }
+
     bDirectory = 0;
 
     // TODO:  if first param is a directory, and 2nd is a tape file
@@ -248,6 +317,15 @@ int bValidate = 0;
     fprintf(stderr, "temporary, copying not supported yet\n");
     exit(1);
   }
+
+  if(bInitialize)
+  {
+    // TODO:  warn if unnecessary params specified??
+
+    return do_initialize_tape(argv[0], iDriveSize, bOverwrite, szTapeLabel);
+  }
+
+  // LIST TAPE DIRECTORY, VALIDATE, OR COPY TAPE TO DIRECTORY
 
   pTape = fopen(argv[0], "r");
   if(!pTape)
@@ -480,6 +558,142 @@ do_file:
   return 0; // won't get here but do this anyway
 }
 
+int QueryYesNo(const char *szMessage)
+{
+char tbuf[256];
+int i1;
+
+  while(!feof(stdin) && !ferror(stdin))
+  {
+    fprintf(stderr, "%s (y/n)?", szMessage);
+    fgets(tbuf, sizeof(tbuf), stdin);
+
+    // trim any trailing white space
+    while((i1 = strlen(tbuf)) > 0 && tbuf[i1 - 1] <= ' ')
+      tbuf[i1 - 1] = 0;
+
+    // trim any lead white space
+    while((i1 = strlen(tbuf)) > 0 && tbuf[0] <= ' ')
+    {
+      if(i1 > 1)
+        memmove(tbuf, tbuf + 1, i1 - 1);
+
+      tbuf[i1 - 1] = 0;
+    }
+
+    if(tbuf[0] == 'Y' || tbuf[0] == 'y')
+      return 1;
+
+    if(tbuf[0] == 'n' || tbuf[0] == 'N')
+      return 0;
+
+    fprintf(stderr, "Please respond with 'Y' or 'N'\n");
+  }
+
+  return 0; // for now (probably won't get here)
+}
+
+int do_initialize_tape(const char *szFileName, int iDriveSize, int bOverwrite, const char *pLabel)
+{
+int i1;
+long lFileSize = 0, lTargetSize = 1024L * 1024L * iDriveSize;
+FILE *pTape;
+RT11_VOL_HEADER *pHdr;
+char buf[512]; // what I write from
+
+
+  if(!pLabel || !*pLabel) // would be padded with white space if done right
+    pLabel = "dectape   ";
+
+  if(iDriveSize <= 0)
+  {
+    fprintf(stderr, "Invalid drive size %d\n", iDriveSize);
+
+    usage();
+
+    return -1;
+  }
+
+  // STEP 1:  does the file exist??
+
+  if(FileExists(szFileName))
+  {
+    if(!bOverwrite && !QueryYesNo("Overwrite existing file"))
+      return 1; // you said 'no'
+
+    // make sure file is zero bytes long
+
+    if(truncate(szFileName, 0)) // zero bytes long
+    {
+      fprintf(stderr, "Unable to write (truncate) to \"%s\", errno=%d (%xH)\n",
+              szFileName, errno, errno);
+
+      return -1;
+    }
+  }
+
+  pTape = fopen(szFileName, "w");
+  if(!pTape)
+  {
+    fprintf(stderr, "Unable to open \"%s\", errno=%d (%xH)\n",
+            szFileName, errno, errno);
+
+    return -1;
+  }
+
+  // build a header
+
+  memset(buf, ' ', sizeof(buf)); // rather than zeros, use white space (no harm)
+
+  pHdr = (RT11_VOL_HEADER *)buf;
+
+  memcpy(pHdr->label_identifier, "VOL", sizeof(pHdr->label_identifier));
+  pHdr->label_number = '1';
+  memcpy(pHdr->volume_identifier, "RT11A ", sizeof(pHdr->volume_identifier));
+  pHdr->accessibility = ' ';
+  memset(pHdr->reserved26, ' ', sizeof(pHdr->reserved26));
+  memcpy(pHdr->owner_identifier, "D%B", sizeof(pHdr->owner_identifier));
+  memcpy(pHdr->owner_name, pLabel, sizeof(pHdr->owner_name));
+  pHdr->DEC_standard_version = '1';
+  memset(pHdr->reserved28, ' ', sizeof(pHdr->reserved28));
+  pHdr->label_standard_version = '3';
+
+  // tape marker, header, tape marker
+
+  if((i1 = fwrite("\x00\x02\x00\x00", 4, 1, pTape)) != 1 ||
+     (i1 = fwrite(buf, sizeof(buf), 1, pTape)) != 1 ||
+     (i1 = fwrite("\x00\x02\x00\x00", 4, 1, pTape)) != 1)
+  {
+write_error:
+    fprintf(stderr, "ERROR:  fwrite() returns %d, errno=%d (%xH)\n",
+            i1, errno, errno);
+
+    fclose(pTape);
+    return -1;
+  }
+
+  // always write at least one empty buffer minus the size of the marker * 2
+
+  memset(buf, 0, sizeof(buf));
+
+  if((i1 = fwrite(buf, sizeof(buf) - 8, 1, pTape)) != 1)
+    goto write_error;
+
+  lFileSize = sizeof(buf) * 2; // tape and marker and remaining 0 bytes
+
+  while(lFileSize < lTargetSize)
+  {
+    if((i1 = fwrite(buf, sizeof(buf), 1, pTape)) != 1)
+      goto write_error;
+
+    lFileSize += sizeof(buf);
+  }
+
+  fclose(pTape);
+
+  return 0;
+}
+
 
 
 const char *date_string(const char *pDate)
@@ -565,5 +779,301 @@ static const short aDaysLeap[13]=
            (iYear % 100));
 
   return szRval;
+}
+
+
+// FILE UTILITIES
+// Some of these were derived from 'ForkMe' - http://github.com/bombasticbob/ForkMe
+// that utility is covered by the same type of license, and was written by the same author as 'dectape'
+
+#define WBAlloc(X) malloc(X)
+#define WBReAlloc(X,Y) realloc(X,Y)
+#define WBFree(X) free(X)
+
+int FileExists(const char *szFileName)
+{
+struct stat sb;
+
+  return !stat(szFileName, &sb);
+}
+
+int IsDirectory(const char *szFileName)
+{
+struct stat sb;
+
+  // NOTE:  this returns info about symlink targets if 'szFileName' is a symlink
+
+  return !stat(szFileName, &sb) &&
+         S_ISDIR(sb.st_mode);
+}
+
+typedef struct __DIRLIST__
+{
+  const char *szPath, *szNameSpec;
+  DIR *hD;
+  struct stat sF;
+  union
+  {
+    char cde[sizeof(struct dirent) + NAME_MAX + 2];
+    struct dirent de;
+  };
+// actual composite 'search name' follows
+} DIRLIST;
+
+void *WBAllocDirectoryList(const char *szDirSpec)
+{
+DIRLIST *pRval;
+char *p1, *p2;
+int iLen, nMaxLen;
+char *pBuf;
+
+  if(!szDirSpec || !*szDirSpec)
+  {
+//    WB_WARN_PRINT("WARNING - %s - invalid directory (NULL or empty)\n", __FUNCTION__);
+    return NULL;
+  }
+
+  iLen = strlen(szDirSpec);
+  nMaxLen = iLen + 32;
+
+  pBuf = WBAlloc(nMaxLen);
+  if(!pBuf)
+  {
+//    WB_ERROR_PRINT("ERROR - %s - Unable to allocate memory for buffer size %d\n", __FUNCTION__, nMaxLen);
+    return NULL;
+  }
+
+  if(szDirSpec[0] == '/') // path starts from the root
+  {
+    memcpy(pBuf, szDirSpec, iLen + 1);
+  }
+  else // for now, force a path of './' to be prepended to path spec
+  {
+    pBuf[0] = '.';
+    pBuf[1] = '/';
+
+    memcpy(pBuf + 2, szDirSpec, iLen + 1);
+    iLen += 2;
+  }
+
+  // do a reverse scan until I find a '/'
+  p1 = ((char *)pBuf) + iLen;
+  while(p1 > pBuf && *(p1 - 1) != '/')
+  {
+    p1--;
+  }
+
+//  WB_ERROR_PRINT("TEMPORARY - \"%s\" \"%s\" \"%s\"\n", pBuf, p1, szDirSpec);
+
+  if(p1 > pBuf)
+  {
+    // found, and p1 points PAST the '/'.  See if it ends in '/' or if there are wildcards present
+    if(!*p1) // name ends in '/'
+    {
+      if(p1 == (pBuf + 1) && *pBuf == '/') // root dir
+      {
+        p1++;
+      }
+      else
+      {
+        *(p1 - 1) = 0;  // trim the final '/'
+      }
+
+      p1[0] = '*';
+      p1[1] = 0;
+    }
+    else if(strchr(p1, '*') || strchr(p1, '?'))
+    {
+      if(p1 == (pBuf + 1) && *pBuf == '/') // root dir
+      {
+        memmove(p1 + 1, p1, strlen(p1) + 1);
+        *(p1++) = 0; // after this, p1 points to the file spec
+      }
+      else
+      {
+        *(p1 - 1) = 0;  // p1 points to the file spec
+      }
+    }
+    else if(IsDirectory(pBuf)) // entire name is a directory
+    {
+      // NOTE:  root directory should NEVER end up here
+
+      p1 += strlen(p1);
+      *(p1++) = 0; // end of path (would be '/')
+      p1[0] = '*';
+      p1[1] = 0;
+    }
+//    else
+//    {
+//      WB_WARN_PRINT("TEMPORARY:  I am confused, %s %s\n", pBuf, p1);
+//    }
+  }
+  else
+  {
+    // this should never happen if I'm always prepending a './'
+    // TODO:  make this more consistent, maybe absolute path?
+
+//    WB_WARN_PRINT("TEMPORARY:  should not happen, %s %s\n", pBuf, p1);
+
+    if(strchr(pBuf, '*') || strchr(pBuf, '?')) // wildcard spec
+    {
+      p1 = (char *)pBuf + 1; // make room for zero byte preceding dir spec
+      memmove(pBuf, p1, iLen + 1);
+      *pBuf = 0;  // since it's the current working dir just make it a zero byte (empty string)
+    }
+    else if(IsDirectory(pBuf))
+    {
+      p1 = (char *)pBuf + iLen;
+      *(p1++) = 0; // end of path (would be '/')
+      p1[0] = '*';
+      p1[1] = 0;
+    }
+  }
+
+  pRval = WBAlloc(sizeof(DIRLIST) + iLen + strlen(p1) + 2);
+
+  if(pRval)
+  {
+    pRval->szPath = pBuf;
+    pRval->szNameSpec = p1;
+
+    p2 = (char *)(pRval + 1);
+    strcpy(p2, pBuf);
+    p2 += strlen(p2);
+    *(p2++) = '/';
+    strcpy(p2, p1);
+    p1 = (char *)(pRval + 1);
+
+    pRval->hD = opendir(pBuf);
+
+//    WB_ERROR_PRINT("TEMPORARY - opendir for %s returns %p\n", pBuf, pRval->hD);
+
+    if(pRval->hD == NULL)
+    {
+//      WB_WARN_PRINT("WARNING - %s - Unable to open dir \"%s\", errno=%d\n", __FUNCTION__, pBuf, errno);
+
+      WBFree(pBuf);
+      WBFree(pRval);
+
+      pRval = NULL;
+    }
+  }
+  else
+  {
+//    WB_ERROR_PRINT("ERROR - %s - Unable to allocate memory for DIRLIST\n", __FUNCTION__);
+    WBFree(pBuf);  // no need to keep this around
+  }
+
+  return pRval;
+}
+
+void WBDestroyDirectoryList(void *pDirectoryList)
+{
+  if(pDirectoryList)
+  {
+    DIRLIST *pD = (DIRLIST *)pDirectoryList;
+
+    if(pD->hD)
+    {
+      closedir(pD->hD);
+    }
+    if(pD->szPath)
+    {
+      WBFree((void *)(pD->szPath));
+    }
+
+    WBFree(pDirectoryList);
+  }
+}
+
+// returns < 0 on error, > 0 on EOF, 0 for "found something"
+
+int WBNextDirectoryEntry(void *pDirectoryList, char *szNameReturn,
+                         int cbNameReturn, unsigned long *pdwModeAttrReturn)
+{
+struct dirent *pD;
+struct stat sF;
+char *p1, *pBuf;
+//static char *p2; // temporary
+int iRval = 1;  // default 'EOF'
+DIRLIST *pDL = (DIRLIST *)pDirectoryList;
+
+
+  if(!pDirectoryList)
+  {
+    return -1;
+  }
+
+  // TODO:  improve this, maybe cache buffer or string length...
+  pBuf = WBAlloc(strlen(pDL->szPath) + 8 + NAME_MAX);
+
+  if(!pBuf)
+  {
+    return -2;
+  }
+
+  strcpy(pBuf, pDL->szPath);
+  p1 = pBuf + strlen(pBuf);
+  if(p1 > pBuf && *(p1 - 1) != '/') // it does not already end in /
+  {
+    *(p1++) = '/';  // for now assume this
+    *p1 = 0;  // by convention
+  }
+
+  if(pDL->hD)
+  {
+    while((pD = readdir(pDL->hD))
+          != NULL)
+    {
+      // skip '.' and '..'
+      if(pD->d_name[0] == '.' &&
+         (!pD->d_name[1] ||
+          (pD->d_name[1] == '.' && !pD->d_name[2])))
+      {
+//        WB_ERROR_PRINT("TEMPORARY:  skipping %s\n", pD->d_name);
+        continue;  // no '.' or '..'
+      }
+
+      strcpy(p1, pD->d_name);
+
+      if(!lstat(pBuf, &sF)) // 'lstat' returns data about a file, and if it's a symlink, returns info about the link itself
+      {
+        if(!fnmatch(pDL->szNameSpec, p1, 0/*FNM_PERIOD*/))  // 'tbuf2' is my pattern
+        {
+          iRval = 0;
+
+          if(pdwModeAttrReturn)
+          {
+            *pdwModeAttrReturn = sF.st_mode;
+          }
+
+          if(szNameReturn && cbNameReturn > 0)
+          {
+            strncpy(szNameReturn, p1, cbNameReturn);
+          }
+
+          break;
+        }
+//        else
+//        {
+//          p2 = pDL->szNameSpec;
+//
+//          WB_ERROR_PRINT("TEMPORARY:  \"%s\" does not match \"%s\"\n", p1, p2);
+//        }
+      }
+//      else
+//      {
+//        WB_WARN_PRINT("%s: can't 'stat' %s, errno=%d (%08xH)\n", __FUNCTION__, pBuf, errno, errno);
+//      }
+    }
+  }
+
+  if(pBuf)
+  {
+    WBFree(pBuf);
+  }
+
+  return iRval;
+
 }
 

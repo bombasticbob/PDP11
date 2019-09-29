@@ -8,15 +8,15 @@
 ** You may use the 'dectape' application at your own risk, in **
 ** accordance with the copyright and license.                 **
 **                                                            **
-** BSD-LIKE LICENSE:                                          **
-** This program may be used, copied, modified, or distributed **
-** in any form so long as this copyright notice and the dis-  **
-** claimer are included along with this documentation file.   **
-**                                                            **
-** You may also use, modify, and/or distribute the 'dectape'  **
-** program using a GPLv2 (or later) license.                  **
-**                                                            **
+** For licensing and copying terms, see LICENSE and COPYING   **
 ****************************************************************
+
+NOTE:  The term 'DECtape' (with upper case 'DEC') is a product that
+was made by Digital Equipment Corporation.  The application name is
+intentionally different with enough similarity to the product name
+to indicate its purpose.
+
+https://en.wikipedia.org/wiki/DECtape
 
 =======
 SUMMARY
@@ -50,9 +50,50 @@ NOTE:  this was tested with RT11 V05.03 and may not work with others.
        for consideration via the github site.
 
 
-=========================
-HISTORY AND USAGE OF RT11
-=========================
+
+==========
+QUCK START
+==========
+
+To copy files from a 'magnetic tape' file, created using a simulated
+PDP11 computer running RT11 via simh/simhv, do the following:
+
+  dectape tapefile directory
+
+where 'tapefile' is the file you attached to the 'TM0' device via the
+simh/simhv console, and 'directory' is a sub-directory (which will be
+created if it does not already exist).
+
+To create a new 'magnetic tape' file (or overwrite an old one) for use
+by the simulated computer system described above, do the following:
+
+  dectape directory tapefile
+
+where 'directory' is an existing sub-directory, and 'tapefile' is
+a 'magnetic tape' file that will be overwritten, or created if it
+does not already exist.
+
+To merely list the files that are on a 'magnetic tape' file, do the
+following:
+
+  dectape tapefile
+
+where 'tapefile' is the name of 'magnetic tape' file.
+
+To initialize a new magnetic tape file, rather than using 'dd' or
+copying an empty directory onto a new file with 'dectape', you can
+do the following:
+
+  dectape -I tapefile
+
+This will create a new 'magnetic tape' file tapefile, with a size
+of 32Mb, and a tape header.
+
+
+
+======================================
+HISTORY AND USAGE OF RT11 UNDER 'simv'
+======================================
 
 NOTE:  This section is entirely for newbies.  You can read it anyway if
 you want but if you consider yourself a guru on ancient computers, you
@@ -127,71 +168,135 @@ you can run simhv and boot it up, similar to the following:
   sim>boot rl0
 
 At this oint you'll be running the emulated PDP11.  From here you can exit
-back to the simhv by pressing CTRL+E.
+back to the 'simh' or 'simhv' console by pressing CTRL+E.
 
-While in the emulator, to mount a magnetic tape file, you can use the
-attach command as follows:
+Now, about using 'magnetic tape' files specifically...
 
-  sim>attach tm0 tapefile.bin
+The 'dectape' program gives you the ability to create and initialize
+a 'magnetic tape' file.  However, it is also possible to do it using the
+RT11 OS and the 'dd' utility (on POSIX systems), which I will first
+describe here...
+
+When you first try and do something with a magnetic tape under 'simh' or
+'simhv', you will first need to pre-extend the file to an appropriate
+length.  The 'TM0' device does not have a fixed size, but I like to use
+32MB.  Here's one way to create it (from the bash prompt):
+
+  bash prompt> dd if=/dev/zero of=tapefile.bin bs=512 count=65536
+
+This will create a 32Mb file (64k 512-byte blocks) filled with zeros on
+a POSIX-compatible system (like Linux or FreeBSD).
+
+You can then attach it to the 'TM0' device and use it as if it were a tape,
+via the 'simh' or 'simhv' console:
+
+  sim> attach tm0 tapefile.bin
 
 then to go back to the PDP11 again, enter the 'cont' command
 
-  sim>cont
+  sim> cont
 
-you'll THEN be able to use the tape file as 'MT0'
-
-Initializing a new tape with a header:
+Next, you'd probably want to initialize the new 'magnetic tape' file with
+a header, under RT11, using the 'DUP' utility.
 
   .R DUP
   *MT0:/Z/Y
   *^C    <-- that's you pressing the CTRL+C key
 
-Example of backing up everything onto a tape from the system drive:
+Now the 'tape' is ready to use for backing up or transferring files, etc.
+
+An example (under RT11) of backing up everything onto a tape from the
+system drive, i.e. 'SY0' :
 
   .R PIP
   *MT0:*.*/M:0=*.*/Y
   *^C    <-- that's you pressing the CTRL+C key again - wait for '*'
 
-OK when you first try and do something with a magnetic tape, you will
-need to pre-extend the file to an appropriate length.  The 'TM0' device
-does not have a fixed size, but I like to use 32MB.  Here's how I make it
-(from the bash prompt):
+NOTE:  the '/Y' at the end copies system files as well.  You need this
+       at the end of a file spec to include system files.
+       Additionally, the '/M:0' tells PIP to rewind the tape first,
+       rather than writing at whatever point you're currently at.
 
-  bash prompt> dd if=/dev/zero of=tapefile.bin bs=512 count=65536
+----------------------------------------------------
+Using 'dectape' to initialize a 'magnetic tape' file
+----------------------------------------------------
 
-This will create a 32Mb file (64k 512-byte blocks) filled with zeros on
-a POSIX-compatible system (like Linux or FreeBSD).  You can then attach
-it to the 'TM0' device and use it as if it were a tape.
+It may be more convenient, however, to use the 'dectape' program to create
+and initialize the 'magnetic tape' file.  Additionally, you can create a
+'magnetic tape' file directly from the contents of a directory.
 
-Additionally, the 'dectape' program can create and initialize a tape file
-for you, from the contents of the directory.  For more on that, read on.
+The following command will initialize an empty 'tape' file with a default
+tape header and 32Mb size:
 
-When you have mounted a tape, you can use the PIP program to one or more
-files to a disk drive.  Example, copy the file "YOU.TXT" from the tape onto
-the system disk:
+  dectape -I tapefile.bin
+
+To copy the contents of a diretory into a new 'tape' file from a directory:
+
+  dectape dirname tapefile.bin
+
+By default any existing tape file will be overwritten with a new one,
+writing the contents of the diretory to the tape.
+
+----------------------------
+Accessing the tape from RT11
+----------------------------
+
+Once you have effectively 'mounted a tape' by attaching the file to a tape
+device in the 'simh' or 'simhv' console, you can use the PIP program to one
+or more files to a disk drive.  Example, copy the file "YOU.TXT" from the
+tape onto the system disk:
 
   .R PIP
   *SY:YOU.TXT=MT0:YOU.TXT/M:0
   *^C  --> the CTRL+C again
 
-The /M:0 tells PIP to rewind the tape first.  Back in the day, this sort of
-thing was important.
+You can also copy files onto the tape in the same manner:
 
-Keep in mind taht the line ending for RT11 is <CR><LF> and the line ending
+  .R PIP
+  *MT0:YOU.TXT/M:0=SY:YOU.TXT
+  *^C  --> the CTRL+C again
+
+The /M:0 tells PIP to rewind the tape first.  Back in the day, this sort of
+thing was important.  In theory it could save time to NOT rewind the tape,
+or you might simply want to start writing to it from that point anyway,
+like if you have a newer version of the same file that appears at the end
+of the tape.
+
+Keep in mind that the line ending for RT11 is <CR><LF> and the line ending
 for POSIX systems is <LF>.  There are utilities that you can use to convert
 between them, such as my 'crlf' utility:
 
   https://github.com/bombasticbob/crlf
 
---------------------------------------------
-(end of 'HISTORY AND USAGE OF RT11' section)
---------------------------------------------
+---------------------------------------------------------
+(end of "HISTORY AND USAGE OF RT11 UNDER 'simv'" section)
+---------------------------------------------------------
 
 
 
 ===============================
 USING THE 'dectape' APPLICATION
 ===============================
+
+INITIALIZING A TAPE FILE
+------------------------
+
+To create and initialize a new tape file, run 'dectape' and specify a
+file name for 'tapefile'.  This file will be deleted and re-reated if
+it already exists.
+
+  dectape -I tapefile.bin
+
+This will create 'tapefile.bin' as a 32Mb binary tape file with an RT11
+tape header.  To customize this, use the following parameters:
+
+  dectape -I -S 32 -L "mytape" tapefile.bin
+
+The '-S' parameter specifies the size of the tape file in megabytes.  The
+'L' parameter indicates the tape volume name [stored in the header].  In
+this case, the output file will be 32Mb in size, with 'mytape' as the name
+of the tape that is stored in the header.
+
 
 DIRECTORY OF A TAPE FILE
 ------------------------

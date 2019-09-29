@@ -1,0 +1,42 @@
+NO RESTRICTIONS ON COPYING AND DISTRIBUTION
+
+The 'dectape' utility, which includes the source file 'dectape.c' as
+well as documentation and all supporting files ('THE SOFTWARE'), may
+be freely distributed  under the terms of the license restrictions
+covered by this document.
+
+Additionally, some of the functions were derived from 'ForkMe', which
+is similarly licensed, and located in the following repository:
+
+  http://github.com/bombasticbob/ForkMe
+
+
+LICENSE
+=======
+
+THE SOFTWARE itself is covered by a dual license.  You may choose one
+or the other, but not both (since they are usually not compatible with
+one another anyway).
+
+The two license choices are:
+  a) MIT-style LICENSE
+  b) STANDARD GPL or LGPL LICENSE
+
+Additionally, other copyrights may also apply, for code that may be
+considered to have been 'derived'.  These are currently displayed within
+the source code at the appropriate places, for reference.
+
+THIS SOFTWARE IS BEING PROVIDED AS-IS, WITH NO WARRANTY WHATSOEVER.  USE IT AT
+YOUR OWN RISK.  S.F.T. INC. CLAIMS NO RESPONSIBILITY FOR ANY ACTIONS OR CONSE-
+QUENCES THAT MAY ARISE FROM THE USE, ABUSE, OR DISTRIBUTION OF THIS SOFTWARE.
+
+For the actual license text, see LICENSE.
+
+
+NOTE:  The term 'DECtape' (with upper case 'DEC') is a product that
+was made by Digital Equipment Corporation.  The application name is
+intentionally different with enough similarity to the product name
+to indicate its purpose.
+
+https://en.wikipedia.org/wiki/DECtape
+
