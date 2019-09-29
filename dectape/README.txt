@@ -1,14 +1,15 @@
 *******************************************************************
 **                                                               **
-** dectape - Copyright (c) 2019 by Bombastic Bob and S.F.T. Inc. **
-**   github:  github.com/bombasticbob/PDP11/dectape              **
+**  dectape - Copyright (c) 2019 by Bob Frazier and S.F.T. Inc.  **
 **                                                               **
-** DISCLAIMER:                                                   **
-** No warranty whatsoever, either implied or specific.           **
-** You may use the 'dectape' application at your own risk, in    **
-** accordance with the copyright and license.                    **
+**  repo:  http://github.com/bombasticbob/PDP11/dectape          **
 **                                                               **
-** For licensing and copying terms, see LICENSE and COPYING      **
+**  DISCLAIMER:                                                  **
+**  No warranty whatsoever, either implied or specific.          **
+**  You may use the 'dectape' application at your own risk, in   **
+**  accordance with the copyright and license.                   **
+**                                                               **
+**  For licensing and copying terms, see LICENSE and COPYING     **
 *******************************************************************
 
 NOTE:  The term 'DECtape' (with upper case 'DEC') is a product that

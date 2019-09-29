@@ -9,10 +9,10 @@
 //                                                                          //
 //////////////////////////////////////////////////////////////////////////////
 //                                                                          //
-//          Copyright (c) 2019 by S.F.T. Inc. - All rights reserved         //
+//            Copyright (c) 2019 by Bob Frazier and S.F.T. Inc.             //
 //  Use, copying, and distribution of this software are licensed according  //
-//  to the GPLv2, LGPLv2, or BSD license, as appropriate. See the included  //
-//  'README.dectape.txt' file for more information.                         //
+//  to the GPLv2, LGPLv2, or MIT-like license, as appropriate. See the      //
+//  included 'LICENSE' and 'COPYING' files for more information.            //
 //                                                                          //
 //////////////////////////////////////////////////////////////////////////////
 

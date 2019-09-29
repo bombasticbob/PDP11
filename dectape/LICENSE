@@ -31,7 +31,7 @@ QUENCES THAT MAY ARISE FROM THE USE, ABUSE, OR DISTRIBUTION OF THIS SOFTWARE.
 
     dectape - A POSIX utility for working with magnetic tape files that are
               compatible with a minicomputer hardware simulator
-    Copyright (c) 2019 by S.F.T. Inc.
+    Copyright (c) 2019 by Bob Frazier and S.F.T. Inc.
 
   DISCLAIMER:  The ForkMe utilities are supplied 'as-is', with no warranties,
                either implied or explicit.
