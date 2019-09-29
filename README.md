@@ -33,7 +33,9 @@ personal use at various places, including these:
 
   <a href="http://simh.trailing-edge.com/kits/rtv53swre.tar.Z">rtv53swre.tar.Z</a><br>
 
-  <a href="ftp://minnie.tuhs.org/pub/PDP-11/Sims/Supnik_2.3/software/rtv53swre.tar.gz">rtv53swre.tar.gz</a></br>
+  - and -
+
+  ftp://minnie.tuhs.org/pub/PDP-11/Sims/Supnik_2.3/software/rtv53swre.tar.gz<br>
 
   (make sure you read the license file - I'm supposed to mention that)
 
