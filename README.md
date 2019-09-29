@@ -33,8 +33,9 @@ personal use at various places, including these:
 
   <a href="http://simh.trailing-edge.com/kits/rtv53swre.tar.Z">
     http://simh.trailing-edge.com/kits/rtv53swre.tar.Z</a><br>
+
   <a href="ftp://minnie.tuhs.org/pub/PDP-11/Sims/Supnik_2.3/software/rtv53swre.tar.gz">
-    ftp://minnie.tuhs.org/pub/PDP-11/Sims/Supnik_2.3/software/rtv53swre.tar.gz</a><br>
+    ftp://minnie.tuhs.org/pub/PDP-11/Sims/Supnik_2.3/software/rtv53swre.tar.gz </a><br>
 
   (make sure you read the license file - I'm supposed to mention that)
 
@@ -59,7 +60,10 @@ you will need to detach the file from the simh console.
 
 Additional information (such as PDP11 documentation) can be found at:
 
-  http://simh.trailing-edge.com/pdf/all_docs.html
-  http://bitsavers.trailing-edge.com/pdf/dec/pdp11/rt11/v5.6_Aug91/
+  <a href="http://simh.trailing-edge.com/pdf/all_docs.html">
+    http://simh.trailing-edge.com/pdf/all_docs.html</a><br>
+
+  <a href="http://bitsavers.trailing-edge.com/pdf/dec/pdp11/rt11/v5.6_Aug91/">
+    http://bitsavers.trailing-edge.com/pdf/dec/pdp11/rt11/v5.6_Aug91/</a><br>
 
 
