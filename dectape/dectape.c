@@ -154,20 +154,30 @@ uint8_t TAPE_MARKER[4]={0, 2, 0, 0};
 
 int iVerbosity = 0; // debug output
 
+int QueryYesNo(const char *szMessage); // returns non-zero for yes, zero for no
+
 int read_the_tape(FILE *pTape, const char *szTapeFileName, const char *pOutPath, int bDirectory, int bOverwrite, int bConfirm, int bValidate);
 int read_tape_block(FILE *pTape, void *pHeader); // always 512 byte blocks plus leading/trailing 'TAPE_MARKER'
-int do_initialize_tape(const char *szFileName, int iDriveSize, int bOverwrite, const char *pLabel);
+int write_tape_block(FILE *pTape, void *pHeader); // always 512 byte blocks plus leading/trailing 'TAPE_MARKER'
+int write_single_file_to_tape(FILE *pTape, const char *szFileName, int *pnFileSeqNum);
 
-int QueryYesNo(const char *szMessage); // returns non-zero for yes, zero for no
+int days_since_year_start(int iYear, int iMonth, int iDay);
+void mdy_from_days_since_year_start(int iYear, int nDays, int *piMonth, int *piDay);
+void rt11_date(const char *pDate, int *piYear, int *piDayInYear);
+const char *rt11_date_string(const char *pDate);
+
+int do_initialize_tape(const char *szFileName, int iDriveSize, int bOverwrite, const char *pLabel);
 
 // file utilities (some are derived code from 'ForkMe')
 int FileExists(const char *szFileName);
 int IsDirectory(const char *szFileName);
+int get_file_RT11_date_time(const char *szFileName, int *pnRTYear, int *pnRTDay);
+int set_file_RT11_date_time(const char *szFileName, int nRTYear, int nRTDay);
 void *WBAllocDirectoryList(const char *szDirSpec);
 void WBDestroyDirectoryList(void *pDirectoryList);
 int WBNextDirectoryEntry(void *pDirectoryList, char *szNameReturn, int cbNameReturn, unsigned long *pdwModeAttrReturn);
 
-const char *date_string(const char *pDate);
+const char *rt11_date_string(const char *pDate);
 
 void usage()
 {
@@ -306,16 +316,28 @@ int iDriveSize = 32;
       exit(1);
     }
 
-    bDirectory = 0;
+    if(IsDirectory(argv[1]) && !IsDirectory(argv[0]))
+    {
+      bDirectory = 0; // a flag for later on
+    }
+    else if(!IsDirectory(argv[1]) && IsDirectory(argv[0]))
+    {
+      // TODO:  if first param is a directory, and 2nd is a tape file
+      //        zero out the tape file and write directory contents to it
+      //        after getting confirmation [just in case].  I could verify
+      //        that it either contains zeros or that it already has a tape
+      //        header in it [then duplicate the tape header info]
 
-    // TODO:  if first param is a directory, and 2nd is a tape file
-    //        zero out the tape file and write directory contents to it
-    //        after getting confirmation [just in case].  I could verify
-    //        that it either contains zeros or that it already has a tape
-    //        header in it [then duplicate the tape header info]
+      fprintf(stderr, "temporary, copying not supported yet\n");
+      exit(1);
+    }
+    else
+    {
+      fprintf(stderr, "ERROR - operation not supported for specified files/paths\n");
 
-    fprintf(stderr, "temporary, copying not supported yet\n");
-    exit(1);
+      usage();
+      exit(1);
+    }
   }
 
   if(bInitialize)
@@ -342,10 +364,58 @@ int iDriveSize = 32;
   return iRval;
 }
 
-int read_tape_block(FILE *pTape, void *pHeader)
+int QueryYesNo(const char *szMessage)
+{
+char tbuf[256];
+int i1;
+
+  while(!feof(stdin) && !ferror(stdin))
+  {
+    fprintf(stderr, "%s (y/n)?", szMessage);
+    fgets(tbuf, sizeof(tbuf), stdin);
+
+    // trim any trailing white space
+    while((i1 = strlen(tbuf)) > 0 && tbuf[i1 - 1] <= ' ')
+      tbuf[i1 - 1] = 0;
+
+    // trim any lead white space
+    while((i1 = strlen(tbuf)) > 0 && tbuf[0] <= ' ')
+    {
+      if(i1 > 1)
+        memmove(tbuf, tbuf + 1, i1 - 1);
+
+      tbuf[i1 - 1] = 0;
+    }
+
+    if(tbuf[0] == 'Y' || tbuf[0] == 'y')
+      return 1;
+
+    if(tbuf[0] == 'n' || tbuf[0] == 'N')
+      return 0;
+
+    fprintf(stderr, "Please respond with 'Y' or 'N'\n");
+  }
+
+  return 0; // for now (probably won't get here)
+}
+
+
+
+//////////////////////////////////////////////////////////////////////////////
+//                                                                          //
+//                 _____                     ___     __ ___                 //
+//                |_   _|__ _  _ __    ___  |_ _|   / // _ \                //
+//                  | | / _` || '_ \  / _ \  | |   / /| | | |               //
+//                  | || (_| || |_) ||  __/  | |  / / | |_| |               //
+//                  |_| \__,_|| .__/  \___| |___|/_/   \___/                //
+//                            |_|                                           //
+//                                                                          //
+//////////////////////////////////////////////////////////////////////////////
+
+
+int read_tape_block(FILE *pTape, void *pBlock)
 {
 uint8_t marker[4];  // where to read the markers into
-size_t sRval;
 
   if(!pTape || feof(pTape))
     return -1;
@@ -357,9 +427,9 @@ size_t sRval;
     return 1; // this is acceptable, but "an error" if I don't expect it
 
   if(memcmp(marker, TAPE_MARKER, sizeof(marker)))
-    return -3;
+    return -3; // missing tape marker
 
-  if(feof(pTape) || fread(pHeader, 512, 1, pTape) != 1)
+  if(feof(pTape) || fread(pBlock, 512, 1, pTape) != 1)
     return -4;
 
   if(feof(pTape) || fread(marker, sizeof(marker), 1, pTape) != 1)
@@ -371,10 +441,155 @@ size_t sRval;
   return 0; // OK!
 }
 
+int write_tape_block(FILE *pTape, void *pBlock)
+{
+size_t lPos;
+
+  if(!pTape)
+    return -1;
+
+  if(fwrite(TAPE_MARKER, 4, 1, pTape) != 1)  // write tape marker
+    return -2;
+
+  if(fwrite(pBlock, 512, 1, pTape) != 1)
+    return -3;
+
+  if(fwrite(TAPE_MARKER, 4, 1, pTape) != 1)
+    return -4;
+
+  lPos = ftell(pTape); // where am I right now?
+
+  if(fwrite(DATA_MARKER, 4, 1, pTape) != 1 || // write two data markers here to mark EOT
+     fwrite(DATA_MARKER, 4, 1, pTape) != 1)
+    return -5;
+
+  if(fseek(pTape, lPos, SEEK_SET) < 0) // re-position just before data marker
+    return -6;
+
+  return 0; // OK!
+}
+
+char *make_output_file_name(const char *pOutPath, const char *pFileIdentifier)
+{
+char *pRval;
+int i1;
+const char *p1, *p2, *pEnd;
+
+  pRval = (char *)malloc(PATH_MAX * 2 + 256);
+  if(!pRval)
+    return NULL;
+
+  strncpy(pRval, pOutPath, PATH_MAX);
+  i1 = strlen(pRval);
+
+  if(i1 > 0 && pRval[i1] != '/')
+    strcat(pRval, "/");
+
+  i1 = strlen(pRval);
+
+  p1 = pFileIdentifier;  // up to 17
+
+  pEnd = p1 + 17;
+
+  while(*p1 && *p1 > ' ')
+    p1++;
+
+  p2 = p1;
+  while(*p2 && p2 < pEnd && *p2 != '.')
+    p2++;
+
+  if(p1 > pFileIdentifier)
+  {
+    memcpy(pRval + i1, pFileIdentifier, p1 - pFileIdentifier);
+    i1 +=  p1 - pFileIdentifier;
+  }
+  if(p2 < pEnd && *p2 == '.')
+  {
+    p1 = p2++;
+    while(*p2 > ' ' && p2 < pEnd)
+      p2++;
+
+    if((p2 - p1) > 4)
+    {
+      memcpy(pRval + i1, p1, 4);
+      i1 += 4;
+    }
+    else
+    {
+      memcpy(pRval + i1, p1, p2 - p1);
+      i1 += p2 - p1;
+    }
+  }
+
+  pRval[i1] = 0;
+
+  return pRval;
+}
+
+FILE *do_open_output_file(const char *pOutPath, const char *pFileIdentifier, int bOverwrite, int bConfirm)
+{
+char *pFileName;
+FILE *pRval;
+
+
+  pFileName = make_output_file_name(pOutPath, pFileIdentifier);
+  if(!pFileName)
+    return NULL;
+
+  if(FileExists(pFileName) && !bOverwrite)
+  {
+    if(bConfirm)
+    {
+      char tbuf[4096];
+      snprintf(tbuf, sizeof(tbuf), "Overwrite \"%s\"", pFileName);
+
+      if(!QueryYesNo(tbuf))
+      {
+        free(pFileName);
+        return NULL;
+      }
+    }
+
+    if(truncate(pFileName, 0)) // zero bytes long
+    {
+      fprintf(stderr, "Unable to write (truncate) to \"%s\", errno=%d (%xH)\n",
+              pFileName, errno, errno);
+
+      free(pFileName);
+      return NULL;
+    }
+  }
+
+  pRval = fopen(pFileName, "w");
+
+  free(pFileName);
+  return pRval;
+}
+
+int do_set_output_file_date_time(const char *pOutPath, const char *pFileIdentifier,
+                                 const char * pCreationDate)
+{
+int iRval;
+char *pFileName;
+int iYear, iDay;
+
+  pFileName = make_output_file_name(pOutPath, pFileIdentifier);
+  if(!pFileName)
+    return -1;
+
+  rt11_date(pCreationDate, &iYear, &iDay);
+  iRval = set_file_RT11_date_time(pFileName, iYear, iDay);
+
+  free(pFileName);
+  return iRval;
+}
+
+
 int read_the_tape(FILE *pTape, const char *szTapeFileName, const char *pOutPath, int bDirectory, int bOverwrite, int bConfirm, int bValidate)
 {
 int iRval = -1, i1, nBlocks, iSeq;
 size_t lPos;
+FILE *pOutFile;
 RT11_VOL_HEADER vol;
 RT11_FILE_HEADER file;
 RT11_FILE_EOF eof;
@@ -469,6 +684,21 @@ do_file:
       return -11;
     }
 
+    if(pOutPath)
+    {
+      pOutFile = do_open_output_file(pOutPath, file.file_identifier, bOverwrite, bConfirm);
+
+      if(!pOutFile)
+      {
+        fprintf(stderr, "Unable to open \"%s/%-17.17s\" - errno=%d (%xH)\n",
+                pOutPath, file.file_identifier, errno, errno);
+      }
+    }
+    else
+    {
+      pOutFile = NULL; // a flag
+    }
+
     nBlocks = 0;
 
     while(!feof(pTape))
@@ -491,8 +721,25 @@ do_file:
         return -7;
       }
 
-      // TODO:  write the actual data to an output file
+      if(pOutFile)
+      {
+        if(fwrite(data, sizeof(data), 1, pOutFile) != 1)
+        {
+          fprintf(stderr, "ERROR - unable to write to \"%s/%-17.17s\" - errno=%d (%xH)\n",
+                  pOutPath, file.file_identifier, errno, errno);
+
+          // TODO:  do I quit?  just flag the error??
+        }
+      }
       nBlocks++;
+    }
+
+    if(pOutFile)
+    {
+      fclose(pOutFile);
+      pOutFile = NULL;
+
+      do_set_output_file_date_time(pOutPath, file.file_identifier, file.creation_date);
     }
 
     if(bDirectory && !bValidate)
@@ -500,7 +747,7 @@ do_file:
       // directory output
       printf("  %-17.17s  %-9.9s  %6d  %11ld\n",
              file.file_identifier,
-             date_string(file.creation_date),
+             rt11_date_string(file.creation_date),
              nBlocks, (long)(nBlocks * 512));
     }
 
@@ -558,40 +805,162 @@ do_file:
   return 0; // won't get here but do this anyway
 }
 
-int QueryYesNo(const char *szMessage)
+int write_single_file_to_tape(FILE *pTape, const char *szFileName, int *pnFileSeqNum)
 {
+int i1, i2, iRval = -999, nBlocks=0, nRTYear, nRTDay, cb1;
+long lFileSize, nBytes;
+FILE *pInput;
+const char *p1, *p2, *pEnd;
+RT11_FILE_HEADER file;
+RT11_FILE_EOF eof;
+uint8_t buf[512]; // file data
 char tbuf[256];
-int i1;
 
-  while(!feof(stdin) && !ferror(stdin))
+  if(!FileExists(szFileName) || IsDirectory(szFileName))
+    return -1; // file will not be copied onto the tape or does not exist any more
+
+  pInput = fopen(szFileName, "r");
+  if(!pInput)
   {
-    fprintf(stderr, "%s (y/n)?", szMessage);
-    fgets(tbuf, sizeof(tbuf), stdin);
+    fprintf(stderr, "ERROR opening file \"%s\" - errno=%d (%xH)\n",
+            szFileName, errno, errno);
 
-    // trim any trailing white space
-    while((i1 = strlen(tbuf)) > 0 && tbuf[i1 - 1] <= ' ')
-      tbuf[i1 - 1] = 0;
-
-    // trim any lead white space
-    while((i1 = strlen(tbuf)) > 0 && tbuf[0] <= ' ')
-    {
-      if(i1 > 1)
-        memmove(tbuf, tbuf + 1, i1 - 1);
-
-      tbuf[i1 - 1] = 0;
-    }
-
-    if(tbuf[0] == 'Y' || tbuf[0] == 'y')
-      return 1;
-
-    if(tbuf[0] == 'n' || tbuf[0] == 'N')
-      return 0;
-
-    fprintf(stderr, "Please respond with 'Y' or 'N'\n");
+    return -2; // error opening file
   }
 
-  return 0; // for now (probably won't get here)
+  // file is open.  build headers for it
+  // TODO:  since name is restricted to 6.3 uppercase I need to keep track of the files that
+  //        are already on the tape, and pick a new name as needed if there's already a match.
+  //        BUT, for NOW, to expedite writing this, I'll just convert to upper case and truncate
+  //        the name and put it on the tape as-is
+
+  memset(&file, 0, sizeof(file));
+  memcpy(file.label_identifier, "HDR", sizeof(file.label_identifier));
+  file.label_number = '1';
+  memcpy(file.file_set_identifier, "RT11A ", sizeof(file.file_set_identifier));
+  memcpy(file.file_section_number, "0001", sizeof(file.file_section_number));
+
+  (*pnFileSeqNum) ++; // increment first
+  snprintf(tbuf, sizeof(tbuf), "%04d", *pnFileSeqNum);
+  memcpy(file.file_sequence_number, tbuf, sizeof(file.file_sequence_number));
+
+  memcpy(file.generation_version, "00", sizeof(file.generation_version));
+
+  // get the file's date/time info as RT11 date/time, make it the 'creation date'
+  get_file_RT11_date_time(szFileName, &nRTYear, &nRTDay);
+  snprintf(tbuf, sizeof(tbuf), "%3d%03d", nRTYear, nRTDay);
+  memcpy(file.creation_date, tbuf, sizeof(file.creation_date));
+
+  memcpy(file.expiration_date, "000000", sizeof(file.expiration_date));
+  file.accessibility = ' ';
+  memcpy(file.block_count, "000000", sizeof(file.block_count));
+  memcpy(file.system_code, "DECRT11A     ", sizeof(file.system_code));
+  memset(file.reserved7, ' ', sizeof(file.reserved7));
+
+  // NEXT, do the EOF header.  Most fields are duplicates of 'file'
+
+  memcpy(&eof, &file, sizeof(eof));
+  // eof fields that are different
+  memcpy(file.label_identifier, "EOF", 3);
+
+  // start by writing the file header
+
+  i1 = write_tape_block(pTape, &file);
+  if(i1)
+  {
+    fprintf(stderr, "ERROR - write_tape_block() returns %d, errno=%d (%xH)\n",
+            i1, errno, errno);
+
+    iRval = i1;
+    goto the_exit_point;
+  }
+
+  // next I must write a DATA_MARKER
+
+  if(fwrite(DATA_MARKER, 4, 1, pTape) != 1) // write two data markers here to mark EOT
+  {
+data_marker_error:
+    fprintf(stderr, "ERROR - can't write data marker, errno=%d (%xH)\n",
+            errno, errno);
+
+    iRval = -1;
+    goto the_exit_point;
+  }
+
+  // next, read 512 byte blocks of the file and write them until I'm done reading it
+
+  fseek(pInput, 0, SEEK_END);
+  lFileSize = ftell(pInput);
+  fseek(pInput, 0, SEEK_SET);
+
+  nBlocks = (lFileSize + 511) / 512; // calc # of blocks that I'll need
+
+  for(i1=0, nBytes=0; i1 < nBlocks; i1++, nBytes += 512)
+  {
+    memset(buf, 0, sizeof(buf));
+
+    if(lFileSize > nBytes + 512)
+    {
+      cb1 = 512;
+    }
+    else
+    {
+      cb1 = (int)(lFileSize - nBytes);
+    }
+
+    if(fread(buf, nBytes, 1, pInput) != 1)
+    {
+      fprintf(stderr, "READ ERROR on input file \"%s\", errno=%d (%xH)\n",
+              szFileName, errno, errno);
+      iRval = -2;
+
+      goto the_exit_point;
+    }
+
+    i2 = write_tape_block(pTape, buf);
+    if(i2)
+    {
+      fprintf(stderr, "ERROR - write_tape_block() returns %d, errno=%d (%xH)\n",
+              i2, errno, errno);
+
+      iRval = i2;
+      goto the_exit_point;
+    }
+  }
+
+  // next I must write a DATA_MARKER
+
+  if(fwrite(DATA_MARKER, 4, 1, pTape) != 1) // write two data markers here to mark EOT
+  {
+    goto data_marker_error;
+  }
+
+  // update the block count and write EOF
+  snprintf(tbuf, sizeof(tbuf), "%06d", nBlocks);
+  memcpy(eof.block_count, tbuf, sizeof(eof.block_count));
+
+  i1 = write_tape_block(pTape, &eof);
+  if(i1)
+  {
+    fprintf(stderr, "ERROR - write_tape_block() returns %d, errno=%d (%xH)\n",
+            i1, errno, errno);
+
+    iRval = i1;
+    goto the_exit_point;
+  }
+
+  if(fwrite(DATA_MARKER, 4, 1, pTape) != 1) // write two data markers here to mark EOT
+  {
+    goto data_marker_error;
+  }
+
+  iRval = 0;
+
+the_exit_point:
+  fclose(pInput);
+  return iRval;
 }
+
 
 int do_initialize_tape(const char *szFileName, int iDriveSize, int bOverwrite, const char *pLabel)
 {
@@ -694,17 +1063,6 @@ write_error:
   return 0;
 }
 
-
-
-const char *date_string(const char *pDate)
-{
-int iYear, iDay, iMonth;
-const short *pD;
-static char szRval[16];
-static const char * const aszMonthNames[13]=
-{
-  "???","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"
-};
 static const short aDays[13]=
 {
   1,
@@ -738,6 +1096,52 @@ static const short aDaysLeap[13]=
   1 + 31 + 29 + 31 + 30 + 31 + 30 + 31 + 31 + 30 + 31 + 30 + 31
 };
 
+int days_since_year_start(int iYear, int iMonth, int iDay)
+{
+const short *pD;
+
+  if((iYear % 400) == 0 ||
+     ((iYear % 4) == 0 && (iYear % 100) != 0)) // leap year
+  {
+    pD = aDaysLeap;
+  }
+  else
+  {
+    pD = aDays;
+  }
+
+  if(iMonth >= 1 && iMonth <= 12)
+    return pD[iMonth] + iDay - 1;
+
+  return 0; // an error, really
+}
+
+void mdy_from_days_since_year_start(int iYear, int nDays, int *piMonth, int *piDay)
+{
+const short *pD;
+
+  if((iYear % 400) == 0 ||
+     ((iYear % 4) == 0 && (iYear % 100) != 0)) // leap year
+  {
+    pD = aDaysLeap;
+  }
+  else
+  {
+    pD = aDays;
+  }
+
+  for(*piMonth=1; *piMonth < 12; (*piMonth)++) // month is 1-based, as is day in year
+  {
+    if(nDays < pD[*piMonth]) // found entry with more days than current one
+      break;
+  }
+
+  *piDay = 1 + nDays - pD[*piMonth - 1]; // day is also 1-based
+}
+
+void rt11_date(const char *pDate, int *piYear, int *piDayInYear)
+{
+int iYear, iDay;
 
   // ignore first character if it's a space, otherwise # of years since 1900
   // format the date from the following information:
@@ -755,27 +1159,28 @@ static const short aDaysLeap[13]=
        + 10 * (pDate[4] - '0')
        + (pDate[5] - '0');
 
-  if((iYear % 400) == 0 ||
-     ((iYear % 4) == 0 && (iYear % 100) != 0)) // leap year
-  {
-    pD = aDaysLeap;
-  }
-  else
-  {
-    pD = aDays;
-  }
+  if(piYear)
+    *piYear = iYear;
 
-  for(iMonth=1; iMonth < 12; iMonth++)
-  {
-    if(iDay < pD[iMonth])
-      break;
-  }
+  if(piDayInYear)
+    *piDayInYear = iDay;
+}
 
-  iDay -= pD[iMonth - 1];
+const char *rt11_date_string(const char *pDate)
+{
+int iYear, iDay, iMonth;
+static char szRval[16];
+static const char * const aszMonthNames[13]=
+{
+  "???","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"
+};
+
+  rt11_date(pDate, &iYear, &iDay);
+  mdy_from_days_since_year_start(iYear, iDay, &iMonth, &iDay);
 
   snprintf(szRval, sizeof(szRval), "%02d-%s-%02d",
            (iDay % 100),
-           aszMonthNames[iMonth],
+           aszMonthNames[iMonth], // 1-based month
            (iYear % 100));
 
   return szRval;
@@ -805,6 +1210,62 @@ struct stat sb;
 
   return !stat(szFileName, &sb) &&
          S_ISDIR(sb.st_mode);
+}
+
+int get_file_RT11_date_time(const char *szFileName, int *pnRTYear, int *pnRTDay)
+{
+struct stat st;
+struct tm *pTM;
+time_t tmFile;
+
+
+  if(*pnRTYear)
+    *pnRTYear = 0;
+  if(*pnRTDay)
+    *pnRTDay = 0;
+
+  if(stat(szFileName, &st))
+  {
+    fprintf(stderr, "Unable to 'stat' \"%s\", errno=%d (%xH)\n",
+            szFileName, errno, errno);
+    return -1;
+  }
+
+  tmFile = (time_t)st.st_mtim.tv_sec; // get the time_t value; next I'll want to conver to a date
+
+  pTM = localtime(&tmFile);
+
+  if(!pTM)
+    return -1;
+
+  if(pnRTDay)
+    *pnRTDay = days_since_year_start(pTM->tm_year + 1900, pTM->tm_mon + 1, pTM->tm_mday);
+
+  if(pnRTYear)
+    *pnRTYear = pTM->tm_year + 1900;
+
+  return 0;
+}
+
+int set_file_RT11_date_time(const char *szFileName, int nRTYear, int nRTDay)
+{
+struct timeval tms[2];
+struct tm tm1;
+int iMonth, iDay;
+
+
+  memset(tms, 0, sizeof(tms));
+  memset(&tm1, 0, sizeof(tm1));
+
+  mdy_from_days_since_year_start(nRTYear, nRTDay, &iMonth, &iDay);
+
+  tm1.tm_mday = iDay;
+  tm1.tm_mon = iMonth - 1;
+  tm1.tm_year =- nRTYear - 1900;
+
+  tms[0].tv_sec = tms[1].tv_sec = mktime(&tm1);
+
+  return utimes(szFileName, &(tms[0]));
 }
 
 typedef struct __DIRLIST__
