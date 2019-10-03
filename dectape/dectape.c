@@ -152,6 +152,11 @@ typedef union _RT11_FILE_EOF_
 uint8_t DATA_MARKER[4]={0, 0, 0, 0};
 uint8_t TAPE_MARKER[4]={0, 2, 0, 0};
 
+#define DEBUG_OUTPUT_WARN    (iVerbosity > 0)
+#define DEBUG_OUTPUT_INFO    (iVerbosity > 1)
+#define DEBUG_OUTPUT_CHATTY  (iVerbosity > 2)
+#define DEBUG_OUTPUT_VERBOSE (iVerbosity > 3)
+
 int iVerbosity = 0; // debug output
 
 int QueryYesNo(const char *szMessage); // returns non-zero for yes, zero for no
@@ -253,7 +258,7 @@ int iDriveSize = 32;
         break;
 
       case 'q':
-        bConfirm = 1;
+        bConfirm = 0;
         break;
 
       case 'n':
@@ -328,7 +333,7 @@ int iDriveSize = 32;
       //        that it either contains zeros or that it already has a tape
       //        header in it [then duplicate the tape header info]
 
-      fprintf(stderr, "temporary, copying not supported yet\n");
+      fprintf(stderr, "temporary, copying to tape not supported yet\n");
       exit(1);
     }
     else
@@ -587,7 +592,7 @@ int iYear, iDay;
 
 int read_the_tape(FILE *pTape, const char *szTapeFileName, const char *pOutPath, int bDirectory, int bOverwrite, int bConfirm, int bValidate)
 {
-int iRval = -1, i1, nBlocks, iSeq;
+int iRval = -1, i1, nBlocks, iSeq, nBytesInLastBlock;
 size_t lPos;
 FILE *pOutFile;
 RT11_VOL_HEADER vol;
@@ -700,6 +705,7 @@ do_file:
     }
 
     nBlocks = 0;
+    nBytesInLastBlock = 512; // initially
 
     while(!feof(pTape))
     {
@@ -730,12 +736,32 @@ do_file:
 
           // TODO:  do I quit?  just flag the error??
         }
+
+        // figure out which byte is the last one without a 0 in it
+        for(nBytesInLastBlock=512; nBytesInLastBlock > 0; nBytesInLastBlock--)
+        {
+          if(data[nBytesInLastBlock - 1] != 0)
+            break;
+        }
       }
+
       nBlocks++;
     }
 
     if(pOutFile)
     {
+      fflush(pOutFile); // make sure I write it all first...
+
+      if(nBlocks > 0 && nBytesInLastBlock < 512)
+      {
+        if(DEBUG_OUTPUT_CHATTY)
+          fprintf(stderr, "truncating file \"%s/%-17.17s\" to %ld bytes\n",
+                  pOutPath, file.file_identifier, (nBlocks - 1) * 512L + nBytesInLastBlock);
+
+        // set file length to match the last block minus trailing 0 bytes
+        ftruncate(fileno(pOutFile), (nBlocks - 1) * 512L + nBytesInLastBlock);
+      }
+
       fclose(pOutFile);
       pOutFile = NULL;
 
@@ -1254,16 +1280,19 @@ struct tm tm1;
 int iMonth, iDay;
 
 
-  memset(tms, 0, sizeof(tms));
-  memset(&tm1, 0, sizeof(tm1));
-
   mdy_from_days_since_year_start(nRTYear, nRTDay, &iMonth, &iDay);
 
+  memset(&tm1, 0, sizeof(tm1));
   tm1.tm_mday = iDay;
   tm1.tm_mon = iMonth - 1;
-  tm1.tm_year =- nRTYear - 1900;
+  tm1.tm_year = nRTYear - 1900;
 
+  memset(tms, 0, sizeof(tms));
   tms[0].tv_sec = tms[1].tv_sec = mktime(&tm1);
+
+  if(DEBUG_OUTPUT_CHATTY)
+    fprintf(stderr, "File:  \"%s\" - set RT11 date %d.%d %04d-%02d-%02d  %ld\n",
+            szFileName, nRTYear, nRTDay, nRTYear, iMonth, iDay, tms[0].tv_sec);
 
   return utimes(szFileName, &(tms[0]));
 }
@@ -1290,7 +1319,8 @@ char *pBuf;
 
   if(!szDirSpec || !*szDirSpec)
   {
-//    WB_WARN_PRINT("WARNING - %s - invalid directory (NULL or empty)\n", __FUNCTION__);
+    if(DEBUG_OUTPUT_WARN)
+      fprintf(stderr, "WARNING - %s - invalid directory (NULL or empty)\n", __FUNCTION__);
     return NULL;
   }
 
@@ -1300,7 +1330,7 @@ char *pBuf;
   pBuf = WBAlloc(nMaxLen);
   if(!pBuf)
   {
-//    WB_ERROR_PRINT("ERROR - %s - Unable to allocate memory for buffer size %d\n", __FUNCTION__, nMaxLen);
+    fprintf(stderr, "ERROR - %s - Unable to allocate memory for buffer size %d\n", __FUNCTION__, nMaxLen);
     return NULL;
   }
 
@@ -1324,7 +1354,10 @@ char *pBuf;
     p1--;
   }
 
-//  WB_ERROR_PRINT("TEMPORARY - \"%s\" \"%s\" \"%s\"\n", pBuf, p1, szDirSpec);
+  if(DEBUG_OUTPUT_CHATTY)
+  {
+    fprintf(stderr, "Allocate Directory List:  \"%s\" \"%s\" \"%s\"\n", pBuf, p1, szDirSpec);
+  }
 
   if(p1 > pBuf)
   {
@@ -1364,17 +1397,18 @@ char *pBuf;
       p1[0] = '*';
       p1[1] = 0;
     }
-//    else
-//    {
-//      WB_WARN_PRINT("TEMPORARY:  I am confused, %s %s\n", pBuf, p1);
-//    }
+    else if(DEBUG_OUTPUT_WARN)
+    {
+      fprintf(stderr, "allocating directory list, but I am confused, %s %s\n", pBuf, p1);
+    }
   }
   else
   {
     // this should never happen if I'm always prepending a './'
     // TODO:  make this more consistent, maybe absolute path?
 
-//    WB_WARN_PRINT("TEMPORARY:  should not happen, %s %s\n", pBuf, p1);
+    if(DEBUG_OUTPUT_WARN)
+      fprintf(stderr, "Allocating directory list:  should not happen, %s %s\n", pBuf, p1);
 
     if(strchr(pBuf, '*') || strchr(pBuf, '?')) // wildcard spec
     {
@@ -1407,11 +1441,12 @@ char *pBuf;
 
     pRval->hD = opendir(pBuf);
 
-//    WB_ERROR_PRINT("TEMPORARY - opendir for %s returns %p\n", pBuf, pRval->hD);
+    fprintf(stderr, "Allocating directory list - opendir for %s returns %p\n", pBuf, pRval->hD);
 
     if(pRval->hD == NULL)
     {
-//      WB_WARN_PRINT("WARNING - %s - Unable to open dir \"%s\", errno=%d\n", __FUNCTION__, pBuf, errno);
+      if(DEBUG_OUTPUT_WARN)
+        fprintf(stderr, "WARNING - %s - Unable to open dir \"%s\", errno=%d\n", __FUNCTION__, pBuf, errno);
 
       WBFree(pBuf);
       WBFree(pRval);
@@ -1421,7 +1456,7 @@ char *pBuf;
   }
   else
   {
-//    WB_ERROR_PRINT("ERROR - %s - Unable to allocate memory for DIRLIST\n", __FUNCTION__);
+    fprintf(stderr, "ERROR - %s - Unable to allocate memory for DIRLIST\n", __FUNCTION__);
     WBFree(pBuf);  // no need to keep this around
   }
 
@@ -1491,7 +1526,8 @@ DIRLIST *pDL = (DIRLIST *)pDirectoryList;
          (!pD->d_name[1] ||
           (pD->d_name[1] == '.' && !pD->d_name[2])))
       {
-//        WB_ERROR_PRINT("TEMPORARY:  skipping %s\n", pD->d_name);
+        if(DEBUG_OUTPUT_CHATTY)
+          fprintf(stderr, "%s.%d:  skipping %s\n", __FUNCTION__, __LINE__, pD->d_name);
         continue;  // no '.' or '..'
       }
 
@@ -1515,17 +1551,16 @@ DIRLIST *pDL = (DIRLIST *)pDirectoryList;
 
           break;
         }
-//        else
-//        {
-//          p2 = pDL->szNameSpec;
-//
-//          WB_ERROR_PRINT("TEMPORARY:  \"%s\" does not match \"%s\"\n", p1, p2);
-//        }
+        else if(DEBUG_OUTPUT_CHATTY)
+        {
+          fprintf(stderr, "DEBUG:  \"%s\" does not match \"%s\"\n", p1, pDL->szNameSpec);
+        }
       }
-//      else
-//      {
-//        WB_WARN_PRINT("%s: can't 'stat' %s, errno=%d (%08xH)\n", __FUNCTION__, pBuf, errno, errno);
-//      }
+      else
+      {
+        if(DEBUG_OUTPUT_WARN)
+          fprintf(stderr, "%s: can't 'stat' %s, errno=%d (%08xH)\n", __FUNCTION__, pBuf, errno, errno);
+      }
     }
   }
 
