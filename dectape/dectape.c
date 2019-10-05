@@ -1,4 +1,3 @@
-//////////////////////////////////////////////////////////////////////////////
 //                                                                          //
 //                 _              _                                         //
 //              __| |  ___   ___ | |_  __ _  _ __    ___     ___            //
@@ -22,9 +21,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
-#include <string.h>
-#include <unistd.h>
 #include <stdarg.h> /* stdarg to make sure I have va_list and other important stuff */
+#include <unistd.h>
+#include <string.h>
+#include <ctype.h>
 #include <dirent.h>
 #include <fnmatch.h>
 #include <sys/stat.h>
@@ -161,17 +161,21 @@ int iVerbosity = 0; // debug output
 
 int QueryYesNo(const char *szMessage); // returns non-zero for yes, zero for no
 
-int read_the_tape(FILE *pTape, const char *szTapeFileName, const char *pOutPath, int bDirectory, int bOverwrite, int bConfirm, int bValidate);
+int read_the_tape(FILE *pTape, const char *szTapeFileName, const char *pOutPath,
+                  int bDirectory, int bOverwrite, int bConfirm, int bValidate, int bFindEndOfTape, int *piSeq);
 int read_tape_block(FILE *pTape, void *pHeader); // always 512 byte blocks plus leading/trailing 'TAPE_MARKER'
 int write_tape_block(FILE *pTape, void *pHeader); // always 512 byte blocks plus leading/trailing 'TAPE_MARKER'
 int write_single_file_to_tape(FILE *pTape, const char *szFileName, int *pnFileSeqNum);
+int write_the_tape(FILE *pTape, const char *pTapeFileName, const char *pInputName, int bAppend, int iDriveSize, const char *szLabel);
 
 int days_since_year_start(int iYear, int iMonth, int iDay);
 void mdy_from_days_since_year_start(int iYear, int nDays, int *piMonth, int *piDay);
 void rt11_date(const char *pDate, int *piYear, int *piDayInYear);
 const char *rt11_date_string(const char *pDate);
+void format_rt11_file_name(const char *szSourceFile, char *pBuf, int cbBuf);
 
-int do_initialize_tape(const char *szFileName, int iDriveSize, int bOverwrite, const char *pLabel);
+int do_initialize_tape(FILE *pTape, const char *szFileName, int iDriveSize, const char *pLabel);
+int initialize_tape(const char *szFileName, int iDriveSize, int bOverwrite, const char *pLabel);
 
 // file utilities (some are derived code from 'ForkMe')
 int FileExists(const char *szFileName);
@@ -182,7 +186,7 @@ void *WBAllocDirectoryList(const char *szDirSpec);
 void WBDestroyDirectoryList(void *pDirectoryList);
 int WBNextDirectoryEntry(void *pDirectoryList, char *szNameReturn, int cbNameReturn, unsigned long *pdwModeAttrReturn);
 
-const char *rt11_date_string(const char *pDate);
+
 
 void usage()
 {
@@ -327,19 +331,34 @@ int iDriveSize = 32;
     }
     else if(!IsDirectory(argv[1]) && IsDirectory(argv[0]))
     {
-      // TODO:  if first param is a directory, and 2nd is a tape file
-      //        zero out the tape file and write directory contents to it
-      //        after getting confirmation [just in case].  I could verify
-      //        that it either contains zeros or that it already has a tape
-      //        header in it [then duplicate the tape header info]
+      if(FileExists(argv[1]) && !bOverwrite && !bAppend && !QueryYesNo("Overwrite tape file"))
+      {
+        exit(0); // don't do it, but not an error either
+      }
 
-      fprintf(stderr, "temporary, copying to tape not supported yet\n");
-      exit(1);
+      if(bAppend && FileExists(argv[1]))
+      {
+        pTape = fopen(argv[1], "r+"); // open for read/write access
+      }
+      else
+      {
+        bAppend = 0; // because the file does not exist
+        pTape = fopen(argv[1], "w"); // open for write access (destroying old one)
+      }
+
+      if(!pTape)
+      {
+        fprintf(stderr, "Unable to open tape file \"%s\"\n", argv[1]);
+        exit(2);
+      }
+
+      iRval = write_the_tape(pTape, argv[1], argv[0], bAppend, iDriveSize, szTapeLabel);
+
+      goto exit_point;
     }
     else
     {
-      fprintf(stderr, "ERROR - operation not supported for specified files/paths\n");
-
+      fputs("ERROR - file-to-file operations not (yet) supported\n", stderr);
       usage();
       exit(1);
     }
@@ -349,7 +368,7 @@ int iDriveSize = 32;
   {
     // TODO:  warn if unnecessary params specified??
 
-    return do_initialize_tape(argv[0], iDriveSize, bOverwrite, szTapeLabel);
+    return initialize_tape(argv[0], iDriveSize, bOverwrite, szTapeLabel);
   }
 
   // LIST TAPE DIRECTORY, VALIDATE, OR COPY TAPE TO DIRECTORY
@@ -362,9 +381,9 @@ int iDriveSize = 32;
   }
 
   iRval = read_the_tape(pTape, argv[0], (const char *)(bDirectory ? NULL : argv[1]),
-                        bDirectory, bOverwrite, bConfirm, bValidate);
+                        bDirectory, bOverwrite, bConfirm, bValidate, 0, NULL);
 
-//exit_point:
+exit_point:
   fclose(pTape);
   return iRval;
 }
@@ -590,9 +609,11 @@ int iYear, iDay;
 }
 
 
-int read_the_tape(FILE *pTape, const char *szTapeFileName, const char *pOutPath, int bDirectory, int bOverwrite, int bConfirm, int bValidate)
+int read_the_tape(FILE *pTape, const char *szTapeFileName, const char *pOutPath,
+                  int bDirectory, int bOverwrite, int bConfirm, int bValidate, int bFindEndOfTape, int *piSeq)
 {
 int iRval = -1, i1, nBlocks, iSeq, nBytesInLastBlock;
+int bFoundTapeHeader = 0;
 size_t lPos;
 FILE *pOutFile;
 RT11_VOL_HEADER vol;
@@ -605,16 +626,58 @@ char tbuf[512];
 
   iSeq = 0;
 
-  if(read_tape_block(pTape, &vol)) // read volume info
+  if(piSeq)
+    *piSeq = 0;
+
+  fseek(pTape, 0, SEEK_SET); // this function only reads from the beginning of the tape
+
+  i1 = read_tape_block(pTape, &vol); // read volume info
+
+  if(i1 < 0)
   {
     fprintf(stderr, "Unable to read header on tape file \"%s\"\n", szTapeFileName);
     return -9;
+  }
+
+  if(i1 == 1) // empty tape
+  {
+    if(bFindEndOfTape)
+    {
+      fseek(pTape, 0, SEEK_SET);
+      return 1; // to indicate 'empty tape'
+    }
+
+    // the tape is empty but I still want to output all of the things
+    // that I normally would before I exit
+
+    if(bValidate)
+    {
+      fputs("** NO VOLUME HEADER **\n", stdout);
+    }
+
+    if(bDirectory && !bValidate)
+    {
+      fputs("\nEND OF TAPE\n\n", stdout);
+    }
+
+    if(bValidate)
+    {
+      fputs("** TAPE VALIDATED **\n", stdout);
+    }
+
+    return 0;
   }
 
   if(!memcmp(vol.label_identifier, "HDR", 3))
   {
     memcpy(&file, &vol, sizeof(file));
 
+    if(bValidate)
+    {
+      fputs("** NO VOLUME HEADER **\n", stdout);
+    }
+
+    bFoundTapeHeader = 0;
     goto do_file;
   }
 
@@ -626,26 +689,30 @@ char tbuf[512];
     return -8;
   }
 
-  if(bDirectory || bValidate)
+  bFoundTapeHeader = 1;
+
+  if((bDirectory || bValidate) && !bFindEndOfTape)
   {
     printf("RT11 TAPE  '%-3.3s' '%-10.10s' V%c Label V%c\n",
            vol.owner_identifier, vol.owner_name,
            vol.DEC_standard_version, vol.label_standard_version);
   }
-  else if(bValidate)
-  {
-    fputs("** NO TAPE HEADER **\n", stdout);
-  }
 
   while(!feof(pTape))
   {
-    i1 = read_tape_block(pTape, &file); // read volume info
+    i1 = read_tape_block(pTape, &file); // read file directory 'HDR' info
 
     if(i1 > 0)
     {
-      if(bDirectory && !bValidate)
+      if(bDirectory && !bValidate && !bFindEndOfTape)
       {
-        printf("\nEND OF TAPE\n\n");
+        fputs("\nEND OF TAPE\n\n", stdout);
+      }
+
+      if(bFindEndOfTape)
+      {
+        // re-position file pointer back 4 bytes
+        fseek(pTape, ftell(pTape) - 4, SEEK_SET);
       }
 
       break;
@@ -665,15 +732,18 @@ char tbuf[512];
 do_file:
     iSeq++;
 
+    if(piSeq)
+      *piSeq = iSeq;
+
     memset(tbuf, 0, sizeof(tbuf));
     memcpy(tbuf, file.file_sequence_number, sizeof(file.file_sequence_number));
-    if(iSeq != atoi(tbuf))
+    if(iSeq != atoi(tbuf) && !bFindEndOfTape)
     {
       fprintf(stderr, "WARNING: Invalid file seq number in header - %d vs %d\n",
               iSeq, atoi(tbuf));
     }
 
-    if(iSeq == 1 && bDirectory && !bValidate)
+    if(iSeq == 1 && bDirectory && !bValidate && !bFindEndOfTape)
     {
       fputs("  FILE NAME         CREATE DATE  BLOCKS  TOTAL BYTES\n"
             "  ================  ===========  ======  ===========\n", stdout);
@@ -768,7 +838,7 @@ do_file:
       do_set_output_file_date_time(pOutPath, file.file_identifier, file.creation_date);
     }
 
-    if(bDirectory && !bValidate)
+    if(bDirectory && !bValidate && !bFindEndOfTape)
     {
       // directory output
       printf("  %-17.17s  %-9.9s  %6d  %11ld\n",
@@ -802,8 +872,9 @@ do_file:
     if(memcmp(eof.file_identifier, file.file_identifier, sizeof(eof.file_identifier)) ||
        atoi(tbuf) != nBlocks)
     {
-      printf("    *EOF HEADER MISMATCH* \"%-17.17s\"  %s\n",
-             eof.file_identifier, tbuf);
+      if(!bFindEndOfTape)
+        printf("    *EOF HEADER MISMATCH* \"%-17.17s\"  %s\n",
+               eof.file_identifier, tbuf);
     }
 
     // there should be a data marker now
@@ -825,12 +896,105 @@ do_file:
     }
   }
 
-  if(bValidate)
+  if(bValidate && !bFindEndOfTape)
     fputs("** TAPE VALIDATED **\n", stdout);
 
-  return 0; // won't get here but do this anyway
+  if(piSeq)
+    *piSeq = iSeq; // I'm returning the sequence number of the last file on the tape
+
+  return 0; // success
 }
 
+int write_the_tape(FILE *pTape, const char *szTapeFileName, const char *szInputName, int bAppend, int iDriveSize, const char *szLabel)
+{
+int iRval = -1, iSeq=0, i1;
+void *pD;
+unsigned long dwMode;
+char tbuf[PATH_MAX * 2], szDir[PATH_MAX];
+
+  fseek(pTape, 0, SEEK_SET);
+
+  if(!bAppend)
+  {
+initialize_tape_first:
+    // initialize the tape file, extend to 32Mb, point just after the tape header
+
+    iRval = do_initialize_tape(pTape, szTapeFileName, iDriveSize, szLabel);
+
+    if(iRval)
+    {
+      return iRval;
+    }
+  }
+  else
+  {
+    // read through the tape file until I get to the last file, and set the file pointer there
+    // If the tape is not initialized, initialize it.
+
+    iRval = read_the_tape(pTape, szTapeFileName, NULL, 0, 0, 0, 0, 1, &iSeq); // seeks to end of tape;
+      // TODO:  need the sequence number of the last file - new param
+
+    if(iRval > 0) // an uninitialized tape
+    {
+      fprintf(stderr, "WARNING - tape is empty, initializing...\n");
+      goto initialize_tape_first;
+    }
+    else if(iRval)
+    {
+      fprintf(stderr, "ERROR - unable to find end of tape (aborting)\n");
+      return iRval;
+    }
+  }
+
+  // do a directory listing of the sub-directory 'pInputName' and write all of
+  // the files that I find [that are not directories] to the tape, with upper case
+  // 6.3 file names and RT11 date/times
+
+  strncpy(szDir, szInputName, sizeof(szDir) - 8);
+
+  i1 = strlen(szDir);
+
+  if(szDir[i1 - 1] != '/')
+    szDir[i1++] = '/';
+
+  szDir[i1] = '*';
+  szDir[i1 + 1] = '.';
+  szDir[i1 + 2] = '*';
+  szDir[i1 + 3] = 0;
+
+  memcpy(tbuf, szDir, i1); // to build full file name when needed
+
+  pD = WBAllocDirectoryList(szDir);
+  if(!pD)
+  {
+    fprintf(stderr, "ERROR - unable to get directory list for \"%s\", errno=%d (%xH)\n",
+            szDir, errno, errno);
+
+    return -21;
+  }
+
+  iRval = 0;
+
+  while(!WBNextDirectoryEntry(pD, tbuf + i1, sizeof(tbuf) - i1 - 1, &dwMode))
+  {
+    if(!S_ISDIR(dwMode) && !S_ISFIFO(dwMode) && !S_ISSOCK(dwMode) // don't copy these
+       && !S_ISLNK(dwMode)) // for now I also skip symlinks
+    {
+      iRval = write_single_file_to_tape(pTape, tbuf, &iSeq);
+
+      if(iRval)
+        break;
+    }
+  }
+
+  WBDestroyDirectoryList(pD);
+
+  return iRval; // for now...
+}
+
+// NOTE:  on entry, '*pfnFileSeqNum' is the seq # for the last file on the tape,
+//        or 0 if the tape is empty.  It is pre-incremented before assigning to
+//        the next file written to the tape.
 int write_single_file_to_tape(FILE *pTape, const char *szFileName, int *pnFileSeqNum)
 {
 int i1, i2, iRval = -999, nBlocks=0, nRTYear, nRTDay, cb1;
@@ -870,11 +1034,15 @@ char tbuf[256];
   snprintf(tbuf, sizeof(tbuf), "%04d", *pnFileSeqNum);
   memcpy(file.file_sequence_number, tbuf, sizeof(file.file_sequence_number));
 
+  format_rt11_file_name(szFileName, tbuf, sizeof(tbuf));
+  memset(file.file_identifier, ' ', sizeof(file.file_identifier));
+  memcpy(file.file_identifier, tbuf, 10); // always 10 bytes long
+
   memcpy(file.generation_version, "00", sizeof(file.generation_version));
 
   // get the file's date/time info as RT11 date/time, make it the 'creation date'
-  get_file_RT11_date_time(szFileName, &nRTYear, &nRTDay);
-  snprintf(tbuf, sizeof(tbuf), "%3d%03d", nRTYear, nRTDay);
+  get_file_RT11_date_time(szFileName, &nRTYear, &nRTDay); // this returns the year as YYYY not YY
+  snprintf(tbuf, sizeof(tbuf), "%3d%03d", (nRTYear-1900)%1000, nRTDay);
   memcpy(file.creation_date, tbuf, sizeof(file.creation_date));
 
   memcpy(file.expiration_date, "000000", sizeof(file.expiration_date));
@@ -887,7 +1055,7 @@ char tbuf[256];
 
   memcpy(&eof, &file, sizeof(eof));
   // eof fields that are different
-  memcpy(file.label_identifier, "EOF", 3);
+  memcpy(eof.label_identifier, "EOF", 3);
 
   // start by writing the file header
 
@@ -934,10 +1102,12 @@ data_marker_error:
       cb1 = (int)(lFileSize - nBytes);
     }
 
-    if(fread(buf, nBytes, 1, pInput) != 1)
+    i2 = fread(buf, cb1, 1, pInput);
+
+    if(i2 != 1)
     {
-      fprintf(stderr, "READ ERROR on input file \"%s\", errno=%d (%xH)\n",
-              szFileName, errno, errno);
+      fprintf(stderr, "READ ERROR on input file \"%s\", i2=%d  errno=%d (%xH)\n",
+              szFileName, i2, errno, errno);
       iRval = -2;
 
       goto the_exit_point;
@@ -987,14 +1157,74 @@ the_exit_point:
   return iRval;
 }
 
-
-int do_initialize_tape(const char *szFileName, int iDriveSize, int bOverwrite, const char *pLabel)
+int do_initialize_tape(FILE *pTape, const char *szFileName, int iDriveSize, const char *pLabel)
 {
 int i1;
-long lFileSize = 0, lTargetSize = 1024L * 1024L * iDriveSize;
-FILE *pTape;
+long lFileSize = 0, lTargetSize = 1024L * 1024L * iDriveSize, lPos;
 RT11_VOL_HEADER *pHdr;
 char buf[512]; // what I write from
+
+  // build a header
+
+  memset(buf, ' ', sizeof(buf)); // rather than zeros, use white space (no harm)
+
+  pHdr = (RT11_VOL_HEADER *)buf;
+
+  memcpy(pHdr->label_identifier, "VOL", sizeof(pHdr->label_identifier));
+  pHdr->label_number = '1';
+  memcpy(pHdr->volume_identifier, "RT11A ", sizeof(pHdr->volume_identifier));
+  pHdr->accessibility = ' ';
+  memset(pHdr->reserved26, ' ', sizeof(pHdr->reserved26));
+  memcpy(pHdr->owner_identifier, "D%B", sizeof(pHdr->owner_identifier));
+  memcpy(pHdr->owner_name, pLabel, sizeof(pHdr->owner_name));
+  pHdr->DEC_standard_version = '1';
+  memset(pHdr->reserved28, ' ', sizeof(pHdr->reserved28));
+  pHdr->label_standard_version = '3';
+
+  // tape marker, header, tape marker
+
+  if((i1 = fwrite("\x00\x02\x00\x00", 4, 1, pTape)) != 1 ||
+     (i1 = fwrite(buf, sizeof(buf), 1, pTape)) != 1 ||
+     (i1 = fwrite("\x00\x02\x00\x00", 4, 1, pTape)) != 1)
+  {
+write_error:
+    fprintf(stderr, "ERROR:  fwrite() returns %d, errno=%d (%xH)\n",
+            i1, errno, errno);
+
+    fclose(pTape);
+    return -1;
+  }
+
+  lPos = ftell(pTape); // current file postion
+
+  // always write at least one empty buffer minus the size of the marker * 2
+
+  memset(buf, 0, sizeof(buf));
+
+  if((i1 = fwrite(buf, sizeof(buf) - 8, 1, pTape)) != 1)
+    goto write_error;
+
+  lFileSize = sizeof(buf) * 2; // tape and marker and remaining 0 bytes
+
+  while(lFileSize < lTargetSize)
+  {
+    if((i1 = fwrite(buf, sizeof(buf), 1, pTape)) != 1)
+      goto write_error;
+
+    lFileSize += sizeof(buf);
+  }
+
+  // set the file pointer to "right after the header"
+
+  fseek(pTape, lPos, SEEK_SET);
+
+  return 0; // I am done
+}
+
+int initialize_tape(const char *szFileName, int iDriveSize, int bOverwrite, const char *pLabel)
+{
+int iRval;
+FILE *pTape;
 
 
   if(!pLabel || !*pLabel) // would be padded with white space if done right
@@ -1036,57 +1266,11 @@ char buf[512]; // what I write from
     return -1;
   }
 
-  // build a header
-
-  memset(buf, ' ', sizeof(buf)); // rather than zeros, use white space (no harm)
-
-  pHdr = (RT11_VOL_HEADER *)buf;
-
-  memcpy(pHdr->label_identifier, "VOL", sizeof(pHdr->label_identifier));
-  pHdr->label_number = '1';
-  memcpy(pHdr->volume_identifier, "RT11A ", sizeof(pHdr->volume_identifier));
-  pHdr->accessibility = ' ';
-  memset(pHdr->reserved26, ' ', sizeof(pHdr->reserved26));
-  memcpy(pHdr->owner_identifier, "D%B", sizeof(pHdr->owner_identifier));
-  memcpy(pHdr->owner_name, pLabel, sizeof(pHdr->owner_name));
-  pHdr->DEC_standard_version = '1';
-  memset(pHdr->reserved28, ' ', sizeof(pHdr->reserved28));
-  pHdr->label_standard_version = '3';
-
-  // tape marker, header, tape marker
-
-  if((i1 = fwrite("\x00\x02\x00\x00", 4, 1, pTape)) != 1 ||
-     (i1 = fwrite(buf, sizeof(buf), 1, pTape)) != 1 ||
-     (i1 = fwrite("\x00\x02\x00\x00", 4, 1, pTape)) != 1)
-  {
-write_error:
-    fprintf(stderr, "ERROR:  fwrite() returns %d, errno=%d (%xH)\n",
-            i1, errno, errno);
-
-    fclose(pTape);
-    return -1;
-  }
-
-  // always write at least one empty buffer minus the size of the marker * 2
-
-  memset(buf, 0, sizeof(buf));
-
-  if((i1 = fwrite(buf, sizeof(buf) - 8, 1, pTape)) != 1)
-    goto write_error;
-
-  lFileSize = sizeof(buf) * 2; // tape and marker and remaining 0 bytes
-
-  while(lFileSize < lTargetSize)
-  {
-    if((i1 = fwrite(buf, sizeof(buf), 1, pTape)) != 1)
-      goto write_error;
-
-    lFileSize += sizeof(buf);
-  }
+  iRval = do_initialize_tape(pTape, szFileName, iDriveSize, pLabel);
 
   fclose(pTape);
 
-  return 0;
+  return iRval;
 }
 
 static const short aDays[13]=
@@ -1137,7 +1321,7 @@ const short *pD;
   }
 
   if(iMonth >= 1 && iMonth <= 12)
-    return pD[iMonth] + iDay - 1;
+    return pD[iMonth - 1] + iDay - 1;
 
   return 0; // an error, really
 }
@@ -1163,6 +1347,12 @@ const short *pD;
   }
 
   *piDay = 1 + nDays - pD[*piMonth - 1]; // day is also 1-based
+
+  if(*piMonth < 1 || *piMonth > 12 || *piDay < 1 || *piDay > 31)
+  {
+    fprintf(stderr, "ERROR - insane month/days from year start:  iYear=%d  nDays=%d  iMonth=%d  iDay=%d\n",
+            iYear, nDays, *piMonth, *piDay);
+  }
 }
 
 void rt11_date(const char *pDate, int *piYear, int *piDayInYear)
@@ -1185,6 +1375,12 @@ int iYear, iDay;
        + 10 * (pDate[4] - '0')
        + (pDate[5] - '0');
 
+  if(iDay < 1 || iDay > 366)
+  {
+    fprintf(stderr, "ERROR - insane 'day' value: \"%s\" --> iYear=%d, iDay=%d\n",
+            pDate, iYear, iDay);
+  }
+
   if(piYear)
     *piYear = iYear;
 
@@ -1204,12 +1400,151 @@ static const char * const aszMonthNames[13]=
   rt11_date(pDate, &iYear, &iDay);
   mdy_from_days_since_year_start(iYear, iDay, &iMonth, &iDay);
 
+  if(iDay < 1 || iDay > 30 || iMonth < 1 || iMonth > 12)
+  {
+    fprintf(stderr, "ERROR - insane dates - \"%s\" --> iYear=%d, iMonth=%d iDay=%d\n",
+            pDate, iYear, iMonth, iDay);
+  }
+
   snprintf(szRval, sizeof(szRval), "%02d-%s-%02d",
            (iDay % 100),
            aszMonthNames[iMonth], // 1-based month
            (iYear % 100));
 
   return szRval;
+}
+
+
+void format_rt11_file_name(const char *szSourceFile, char *pBuf, int cbBuf)
+{
+int i1;
+const char *p1c;
+char *p1, *p2;
+char tbuf[64];
+char name[7];
+char ext[4];
+
+  memset(tbuf, 0, sizeof(tbuf));
+
+  // the filename must be a 6.3 name, upper case.
+  p1c = strrchr(szSourceFile, '/'); // if it has a directory in it, find the '/'
+  if(p1c)
+    p1c++;
+  else
+    p1c = szSourceFile;
+
+  memset(tbuf, 0, sizeof(tbuf));
+  memset(name, 0, sizeof(name));
+  memset(ext, 0, sizeof(ext));
+
+  strncpy(tbuf, p1c, sizeof(tbuf)-1);
+
+  // convert to upper case.  Name must be RAD50 char, 0-9 A-Z $ ? or space,
+  // in the format NNNNNN.EEE  with trailing white space to justify
+
+  p1 = tbuf;
+  while(*p1 && *p1 != '.')
+  {
+    char c1 = toupper(*p1);
+    if((c1 < '0' && c1 > '9') &&
+       (c1 < 'A' && c1 > 'Z') &&
+       (c1 != '$' && c1 != '?' && c1 != ' '))
+    {
+      c1 = '?'; // sub in '?' for bad chars
+    }
+
+    *(p1++) = c1;
+  }
+
+  i1 = p1 - tbuf;
+  if(i1 > 6)
+    i1 = 6;
+
+  if(i1 > 0)
+    memcpy(name, tbuf, i1);
+
+  if(i1 < 6)
+    memset(name + i1, ' ', 6 - i1);
+
+  name[6] = 0;
+
+  if(!*p1)
+  {
+    fputs("SHIT\n",stderr);
+    p2 = p1;
+  }
+  else
+  {
+    p1++;
+    p2 = p1;
+
+//    fprintf(stderr, "    HERE:  \"%s\"\n", p1);
+
+    while(*p1)
+    {
+      char c1 = toupper(*p1);
+      if((c1 < '0' && c1 > '9') &&
+         (c1 < 'A' && c1 > 'Z') &&
+         (c1 != '$' && c1 != '?' && c1 != ' '))
+      {
+        c1 = '?'; // sub in '?' for bad chars
+      }
+
+      *(p1++) = c1;
+    }
+
+//    fprintf(stderr, "    HERE:  \"%s\" len=%d\n", p2, p1 - p2);
+  }
+
+  i1 = p1 - p2;
+  if(i1 > 3)
+    i1 = 3;
+
+  if(i1 > 0)
+    memcpy(ext, p2, i1);
+
+  if(i1 < 3)
+    memset(ext + i1, ' ', 3 - i1);
+
+  ext[3] = 0;
+
+//  fprintf(stderr, "    TEMPORARY:  %s becomes \"%s.%s\"\n",
+//          szSourceFile, name, ext);
+
+  // format file name into output buffer
+
+  if(cbBuf > 6)
+  {
+    memcpy(pBuf, name, 6);
+    pBuf += 6;
+    cbBuf -= 6;
+  }
+  else if(cbBuf > 0)
+  {
+    memcpy(pBuf, name, cbBuf);
+    cbBuf = 0;
+  }
+
+  if(cbBuf > 0)
+  {
+    *(pBuf++) = '.';
+    cbBuf --;
+  }
+
+  if(cbBuf > 3)
+  {
+    memcpy(pBuf, ext, 3);
+    pBuf += 3;
+    cbBuf -= 3;
+  }
+  else if(cbBuf > 0)
+  {
+    memcpy(pBuf, ext, cbBuf);
+    cbBuf = 0;
+  }
+
+  if(cbBuf > 0)
+    *pBuf = 0;
 }
 
 
@@ -1238,6 +1573,7 @@ struct stat sb;
          S_ISDIR(sb.st_mode);
 }
 
+// NOTE:  year is returned as YYYY not YY, so subtract 1900 - then 2000 becomes 100, etc.
 int get_file_RT11_date_time(const char *szFileName, int *pnRTYear, int *pnRTDay)
 {
 struct stat st;
@@ -1441,7 +1777,8 @@ char *pBuf;
 
     pRval->hD = opendir(pBuf);
 
-    fprintf(stderr, "Allocating directory list - opendir for %s returns %p\n", pBuf, pRval->hD);
+    if(DEBUG_OUTPUT_VERBOSE)
+      fprintf(stderr, "Allocating directory list - opendir for %s returns %p\n", pBuf, pRval->hD);
 
     if(pRval->hD == NULL)
     {
