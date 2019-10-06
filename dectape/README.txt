@@ -121,7 +121,7 @@ on demand, as needed) and other things that you'd normally only find in a
 mainframe system at that time.  As such it was really useful for schools
 that teach programming, which is where I learned to use it.
 
-The 'RT' means 'Run Time' and as such it is an RTOS by the classic
+The 'RT' means 'Real Time' and as such it is an RTOS by the classic
 definition of one.  In short, it's NOT a time-share system.  It's a
 dedicated system with foreground/background capability, so if you're
 controlling a device, or doing punch card programs, it's perfect (well,
