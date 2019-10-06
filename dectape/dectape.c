@@ -614,6 +614,7 @@ int read_the_tape(FILE *pTape, const char *szTapeFileName, const char *pOutPath,
 {
 int iRval = -1, i1, nBlocks, iSeq, nBytesInLastBlock;
 int bFoundTapeHeader = 0;
+size_t lZeroedZZZ = 0L;
 size_t lPos;
 FILE *pOutFile;
 RT11_VOL_HEADER vol;
@@ -683,6 +684,9 @@ char tbuf[512];
 
   if(memcmp(vol.label_identifier, "VOL", 3) || vol.label_number != '1')
   {
+    // TODO:  try again and see if this was a boot block?
+    //        normally I wouldn't want to rely on a boot block without a volume header...
+
     fprintf(stderr, "Bad volume header - \"%-3.3s\" '%c'\n",
             vol.label_identifier, vol.label_number);
 
@@ -698,8 +702,12 @@ char tbuf[512];
            vol.DEC_standard_version, vol.label_standard_version);
   }
 
+  iSeq = -1; // as a flag, first time around
+
   while(!feof(pTape))
   {
+    lPos = ftell(pTape); // position of the current header
+
     i1 = read_tape_block(pTape, &file); // read file directory 'HDR' info
 
     if(i1 > 0)
@@ -715,19 +723,44 @@ char tbuf[512];
         fseek(pTape, ftell(pTape) - 4, SEEK_SET);
       }
 
+      if(iSeq < 0)  // first time through?
+        iSeq = 0; // fix it back
+
       break;
     }
-    else if(i1 < 0 || memcmp(file.label_identifier, "HDR", 3) || file.label_number != '1')
+    else if(i1 < 0)
     {
-      if(i1 < 0)
-        fprintf(stderr, "Unable to read file header at position %ld\n", (long)ftell(pTape) - 4);
-      else
-        fprintf(stderr, "Invalid file header at position %ld - \"%-3.3s\" '%c'\n",
-                (long)ftell(pTape) - 4,
-                file.label_identifier, file.label_number);
+      fprintf(stderr, "Unable to read file header at position %ld\n", (long)ftell(pTape) - 4);
 
       return -10;
     }
+    else if(memcmp(file.label_identifier, "HDR", 3) || file.label_number != '1')
+    {
+      if(iSeq < 0 && memcmp(file.label_identifier, "HDR", 3)) // is it a boot block?
+      {
+        // for now assume this is a boot block
+
+        if(bDirectory && !bFindEndOfTape)
+        {
+          fputs("  *BOOT BLOCK DETECTED*\n", stdout);
+        }
+
+        iSeq = 0;
+
+        continue; // read it again
+      }
+      else
+      {
+        fprintf(stderr, "Invalid file header at position %ld - \"%-3.3s\" '%c'\n",
+                (long)ftell(pTape) - 4,
+                file.label_identifier, file.label_number);
+      }
+
+      return -10;
+    }
+
+    if(iSeq < 0) // first time through only, as a flag
+      iSeq = 0;
 
 do_file:
     iSeq++;
@@ -735,15 +768,37 @@ do_file:
     if(piSeq)
       *piSeq = iSeq;
 
+    if(DEBUG_OUTPUT_CHATTY)
+      fprintf(stderr, "*INFO* - iSeq = %d\n", iSeq);
+
     memset(tbuf, 0, sizeof(tbuf));
     memcpy(tbuf, file.file_sequence_number, sizeof(file.file_sequence_number));
-    if(iSeq != atoi(tbuf) && !bFindEndOfTape)
+
+    lZeroedZZZ = 0L;
+
+    if(iSeq == 1 && atoi(tbuf) == 0) // special case, 'ZEROED.ZZZ' file
+    {
+      if(!bFindEndOfTape)
+        fputs("  ** FOUND ZEROED.ZZZ **\n", stdout);
+
+      if(DEBUG_OUTPUT_CHATTY)
+        fprintf(stderr, "*INFO* - ZEROED.ZZZ - iSeq = %d\n", iSeq);
+
+      lZeroedZZZ = lPos; // keep track of where the HDR1 for ZEROED.ZZZ began
+
+      iSeq = 0; // reset the sequence number to zero
+
+      if(piSeq) // in case I return early
+        *piSeq = iSeq;
+
+      // there should be a block of 8 zero bytes, followed by the EOF
+    }
+    else if(iSeq != atoi(tbuf) && !bFindEndOfTape)
     {
       fprintf(stderr, "WARNING: Invalid file seq number in header - %d vs %d\n",
               iSeq, atoi(tbuf));
     }
-
-    if(iSeq == 1 && bDirectory && !bValidate && !bFindEndOfTape)
+    else if(iSeq == 1 && bDirectory && !bValidate && !bFindEndOfTape)
     {
       fputs("  FILE NAME         CREATE DATE  BLOCKS  TOTAL BYTES\n"
             "  ================  ===========  ======  ===========\n", stdout);
@@ -759,7 +814,18 @@ do_file:
       return -11;
     }
 
-    if(pOutPath)
+    if(lZeroedZZZ && // there should be one more data marker
+       (fread(marker, sizeof(marker), 1, pTape) != 1 ||
+        memcmp(marker, DATA_MARKER, sizeof(marker)))) // need a marker here
+    {
+      fprintf(stderr, "missing 2nd data marker at position %ld, file \"%-17.17s\"\n",
+              (long)ftell(pTape) - 4,
+              file.file_identifier);
+
+      return -11;
+    }
+
+    if(pOutPath && !lZeroedZZZ)
     {
       pOutFile = do_open_output_file(pOutPath, file.file_identifier, bOverwrite, bConfirm);
 
@@ -777,7 +843,7 @@ do_file:
     nBlocks = 0;
     nBytesInLastBlock = 512; // initially
 
-    while(!feof(pTape))
+    while(!lZeroedZZZ && !feof(pTape))
     {
       lPos = ftell(pTape); // current position
 
@@ -838,7 +904,7 @@ do_file:
       do_set_output_file_date_time(pOutPath, file.file_identifier, file.creation_date);
     }
 
-    if(bDirectory && !bValidate && !bFindEndOfTape)
+    if(!lZeroedZZZ && bDirectory && !bValidate && !bFindEndOfTape)
     {
       // directory output
       printf("  %-17.17s  %-9.9s  %6d  %11ld\n",
@@ -852,6 +918,9 @@ do_file:
     if(i1 > 0)
     {
       printf("unexpected (missing EOF record)\nEND OF TAPE\n\n");
+
+      if(lZeroedZZZ && bFindEndOfTape)
+        fseek(pTape, lPos, SEEK_SET);
 
       return 1;
     }
@@ -893,6 +962,23 @@ do_file:
       printf("missing data marker at end of EOF record\n");
 
       return -14;
+    }
+
+    if(lZeroedZZZ && bFindEndOfTape)
+    {
+      if(fread(marker, sizeof(marker), 1, pTape) != 1 ||
+         memcmp(marker, DATA_MARKER, sizeof(marker))) // need a marker here
+      {
+        fprintf(stderr, "missing 2nd data marker at position %ld, file \"%-17.17s\"\n",
+                (long)ftell(pTape) - 4,
+                file.file_identifier);
+
+        return -14;
+      }
+
+      fseek(pTape, lPos, SEEK_SET); // position to just BEFORE the 'ZEROED.ZZZ' file header
+
+      break;
     }
   }
 
@@ -944,6 +1030,13 @@ initialize_tape_first:
       fprintf(stderr, "ERROR - unable to find end of tape (aborting)\n");
       return iRval;
     }
+
+    // right now iSeq should be the sequence number for the last file found
+    // if there were NO files on the tape, however, it could be negative
+    // TODO:  should I fix this??
+
+    if(iSeq < 0) // can happen with an empty tape
+      iSeq = 0;
   }
 
   // do a directory listing of the sub-directory 'pInputName' and write all of
